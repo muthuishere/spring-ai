@@ -33,8 +33,10 @@ import org.springframework.web.reactive.function.client.WebClient;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
 
+import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.Predicate;
 
@@ -44,6 +46,7 @@ import java.util.function.Predicate;
  * <a href="https://open.bigmodel.cn/dev/api#text_embedding">ZhiPuAI Embedding API</a>.
  *
  * @author Geng Rong
+ * @author Thomas Vitale
  * @since 1.0.0
  */
 public class ZhiPuAiApi {
@@ -228,8 +231,8 @@ public class ZhiPuAiApi {
 			@JsonProperty("max_tokens") Integer maxTokens,
 			@JsonProperty("stop") List<String> stop,
 			@JsonProperty("stream") Boolean stream,
-			@JsonProperty("temperature") Float temperature,
-			@JsonProperty("top_p") Float topP,
+			@JsonProperty("temperature") Double temperature,
+			@JsonProperty("top_p") Double topP,
 			@JsonProperty("tools") List<FunctionTool> tools,
 			@JsonProperty("tool_choice") Object toolChoice,
 			@JsonProperty("user") String user,
@@ -243,7 +246,7 @@ public class ZhiPuAiApi {
 		 * @param model ID of the model to use.
 		 * @param temperature What sampling temperature to use, between 0 and 1.
 		 */
-		public ChatCompletionRequest(List<ChatCompletionMessage> messages, String model, Float temperature) {
+		public ChatCompletionRequest(List<ChatCompletionMessage> messages, String model, Double temperature) {
 			this(messages, model, null,  null, false, temperature, null,
 					null, null, null, null, null);
 		}
@@ -257,7 +260,7 @@ public class ZhiPuAiApi {
 		 * @param stream If set, partial message deltas will be sent.Tokens will be sent as data-only server-sent events
 		 * as they become available, with the stream terminated by a data: [DONE] message.
 		 */
-		public ChatCompletionRequest(List<ChatCompletionMessage> messages, String model, Float temperature, boolean stream) {
+		public ChatCompletionRequest(List<ChatCompletionMessage> messages, String model, Double temperature, boolean stream) {
 			this(messages, model, null,  null,  stream, temperature, null,
 					null, null, null, null, null);
 		}
@@ -273,7 +276,7 @@ public class ZhiPuAiApi {
 		 */
 		public ChatCompletionRequest(List<ChatCompletionMessage> messages, String model,
 				List<FunctionTool> tools, Object toolChoice) {
-			this(messages, model, null, null,  false, 0.8f, null,
+			this(messages, model, null, null,  false, 0.8, null,
 					tools, toolChoice, null, null, null);
 		}
 
@@ -684,7 +687,7 @@ public class ZhiPuAiApi {
 				.takeUntil(SSE_DONE_PREDICATE)
 				.filter(SSE_DONE_PREDICATE.negate())
 				.map(content -> ModelOptionsUtils.jsonToObject(content, ChatCompletionChunk.class))
- 				.map(chunk -> {
+				.map(chunk -> {
 					if (this.chunkMerger.isStreamingToolFunctionCall(chunk)) {
 						isInsideTool.set(true);
 					}
@@ -749,6 +752,25 @@ public class ZhiPuAiApi {
 		 */
 		public Embedding(Integer index, float[] embedding) {
 			this(index, embedding, "embedding");
+		}
+		@Override public boolean equals(Object o) {
+    		if (this == o) return true;
+    		if (!(o instanceof Embedding embedding1)) return false;
+    		return Objects.equals(index, embedding1.index) && Arrays.equals(embedding, embedding1.embedding) && Objects.equals(object, embedding1.object);
+		}
+		@Override
+		public int hashCode() {
+			int result = Objects.hash(index, object);
+			result = 31 * result + Arrays.hashCode(embedding);
+			return result;
+		}
+
+		@Override public String toString() {
+			return "Embedding{" +
+					"index=" + index +
+					", embedding=" + Arrays.toString(embedding) +
+					", object='" + object + '\'' +
+					'}';
 		}
 	}
 

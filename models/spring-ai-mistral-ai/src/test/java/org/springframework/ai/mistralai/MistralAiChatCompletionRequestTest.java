@@ -28,7 +28,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * @author Ricken Bazolo
  * @since 0.8.1
  */
-@SpringBootTest
+@SpringBootTest(classes = MistralAiTestConfiguration.class)
 @EnabledIfEnvironmentVariable(named = "MISTRAL_AI_API_KEY", matches = ".+")
 public class MistralAiChatCompletionRequestTest {
 
@@ -41,7 +41,7 @@ public class MistralAiChatCompletionRequestTest {
 
 		assertThat(request.messages()).hasSize(1);
 		assertThat(request.topP()).isEqualTo(1);
-		assertThat(request.temperature()).isEqualTo(0.7f);
+		assertThat(request.temperature()).isEqualTo(0.7);
 		assertThat(request.safePrompt()).isFalse();
 		assertThat(request.maxTokens()).isNull();
 		assertThat(request.stream()).isFalse();
@@ -50,13 +50,13 @@ public class MistralAiChatCompletionRequestTest {
 	@Test
 	void chatCompletionRequestWithOptionsTest() {
 
-		var options = MistralAiChatOptions.builder().withTemperature(0.5f).withTopP(0.8f).build();
+		var options = MistralAiChatOptions.builder().withTemperature(0.5).withTopP(0.8).build();
 
 		var request = chatModel.createRequest(new Prompt("test content", options), true);
 
 		assertThat(request.messages().size()).isEqualTo(1);
-		assertThat(request.topP()).isEqualTo(0.8f);
-		assertThat(request.temperature()).isEqualTo(0.5f);
+		assertThat(request.topP()).isEqualTo(0.8);
+		assertThat(request.temperature()).isEqualTo(0.5);
 		assertThat(request.stream()).isTrue();
 	}
 

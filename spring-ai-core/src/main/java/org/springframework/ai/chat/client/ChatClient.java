@@ -21,14 +21,17 @@ import java.util.List;
 import java.util.Map;
 import java.util.function.Consumer;
 
+import org.springframework.ai.chat.client.advisor.api.Advisor;
 import org.springframework.ai.chat.client.observation.ChatClientObservationConvention;
 import org.springframework.ai.chat.messages.Message;
 import org.springframework.ai.chat.model.ChatModel;
 import org.springframework.ai.chat.model.ChatResponse;
+import org.springframework.ai.chat.model.ToolContext;
 import org.springframework.ai.chat.prompt.ChatOptions;
 import org.springframework.ai.chat.prompt.Prompt;
 import org.springframework.ai.converter.StructuredOutputConverter;
 import org.springframework.ai.model.Media;
+import org.springframework.ai.model.function.FunctionCallback;
 import org.springframework.core.ParameterizedTypeReference;
 import org.springframework.core.io.Resource;
 import org.springframework.util.MimeType;
@@ -73,7 +76,9 @@ public interface ChatClient {
 
 	ChatClientRequestSpec prompt();
 
-	ChatClientPromptRequestSpec prompt(Prompt prompt);
+	ChatClientRequestSpec prompt(String content);
+
+	ChatClientRequestSpec prompt(Prompt prompt);
 
 	/**
 	 * Return a {@link ChatClient.Builder} to create a new {@link ChatClient} whose
@@ -122,9 +127,9 @@ public interface ChatClient {
 
 		AdvisorSpec params(Map<String, Object> p);
 
-		AdvisorSpec advisors(RequestResponseAdvisor... advisors);
+		AdvisorSpec advisors(Advisor... advisors);
 
-		AdvisorSpec advisors(List<RequestResponseAdvisor> advisors);
+		AdvisorSpec advisors(List<Advisor> advisors);
 
 	}
 
@@ -156,14 +161,6 @@ public interface ChatClient {
 
 	}
 
-	interface ChatClientPromptRequestSpec {
-
-		CallPromptResponseSpec call();
-
-		StreamPromptResponseSpec stream();
-
-	}
-
 	interface CallPromptResponseSpec {
 
 		String content();
@@ -192,9 +189,9 @@ public interface ChatClient {
 
 		ChatClientRequestSpec advisors(Consumer<AdvisorSpec> consumer);
 
-		ChatClientRequestSpec advisors(RequestResponseAdvisor... advisors);
+		ChatClientRequestSpec advisors(Advisor... advisors);
 
-		ChatClientRequestSpec advisors(List<RequestResponseAdvisor> advisors);
+		ChatClientRequestSpec advisors(List<Advisor> advisors);
 
 		ChatClientRequestSpec messages(Message... messages);
 
@@ -205,10 +202,17 @@ public interface ChatClient {
 		<I, O> ChatClientRequestSpec function(String name, String description,
 				java.util.function.Function<I, O> function);
 
+		<I, O> ChatClientRequestSpec function(String name, String description,
+				java.util.function.BiFunction<I, ToolContext, O> function);
+
+		<I, O> ChatClientRequestSpec functions(FunctionCallback... functionCallbacks);
+
 		<I, O> ChatClientRequestSpec function(String name, String description, Class<I> inputType,
 				java.util.function.Function<I, O> function);
 
 		ChatClientRequestSpec functions(String... functionBeanNames);
+
+		ChatClientRequestSpec toolContext(Map<String, Object> toolContext);
 
 		ChatClientRequestSpec system(String text);
 
@@ -237,11 +241,11 @@ public interface ChatClient {
 	 */
 	interface Builder {
 
-		Builder defaultAdvisors(RequestResponseAdvisor... advisor);
+		Builder defaultAdvisors(Advisor... advisor);
 
 		Builder defaultAdvisors(Consumer<AdvisorSpec> advisorSpecConsumer);
 
-		Builder defaultAdvisors(List<RequestResponseAdvisor> advisors);
+		Builder defaultAdvisors(List<Advisor> advisors);
 
 		Builder defaultOptions(ChatOptions chatOptions);
 
@@ -263,7 +267,14 @@ public interface ChatClient {
 
 		<I, O> Builder defaultFunction(String name, String description, java.util.function.Function<I, O> function);
 
+		<I, O> Builder defaultFunction(String name, String description,
+				java.util.function.BiFunction<I, ToolContext, O> function);
+
 		Builder defaultFunctions(String... functionNames);
+
+		Builder defaultFunctions(FunctionCallback... functionCallbacks);
+
+		Builder defaultToolContext(Map<String, Object> toolContext);
 
 		ChatClient build();
 

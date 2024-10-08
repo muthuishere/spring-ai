@@ -21,21 +21,27 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 
+import io.micrometer.observation.Observation;
+import io.micrometer.observation.ObservationRegistry;
+import io.micrometer.observation.contextpropagation.ObservationThreadLocalAccessor;
 import org.springframework.ai.chat.messages.AssistantMessage;
 import org.springframework.ai.chat.messages.SystemMessage;
 import org.springframework.ai.chat.messages.ToolResponseMessage;
 import org.springframework.ai.chat.messages.UserMessage;
 import org.springframework.ai.chat.metadata.ChatGenerationMetadata;
 import org.springframework.ai.chat.metadata.ChatResponseMetadata;
-import org.springframework.ai.chat.model.AbstractToolCallSupport;
-import org.springframework.ai.chat.model.ChatModel;
-import org.springframework.ai.chat.model.ChatResponse;
-import org.springframework.ai.chat.model.Generation;
+import org.springframework.ai.chat.model.*;
+import org.springframework.ai.chat.observation.ChatModelObservationContext;
+import org.springframework.ai.chat.observation.ChatModelObservationConvention;
+import org.springframework.ai.chat.observation.ChatModelObservationDocumentation;
+import org.springframework.ai.chat.observation.DefaultChatModelObservationConvention;
 import org.springframework.ai.chat.prompt.ChatOptions;
+import org.springframework.ai.chat.prompt.ChatOptionsBuilder;
 import org.springframework.ai.chat.prompt.Prompt;
 import org.springframework.ai.model.ModelOptionsUtils;
 import org.springframework.ai.model.function.FunctionCallback;
 import org.springframework.ai.model.function.FunctionCallbackContext;
+import org.springframework.ai.model.function.FunctionCallingOptions;
 import org.springframework.ai.ollama.api.OllamaApi;
 import org.springframework.ai.ollama.api.OllamaApi.ChatRequest;
 import org.springframework.ai.ollama.api.OllamaApi.Message.Role;
@@ -64,6 +70,8 @@ import reactor.core.publisher.Flux;
  */
 public class OllamaChatModel extends AbstractToolCallSupport implements ChatModel {
 
+	private static final ChatModelObservationConvention DEFAULT_OBSERVATION_CONVENTION = new DefaultChatModelObservationConvention();
+
 	/**
 	 * Low-level Ollama API library.
 	 */
@@ -72,61 +80,98 @@ public class OllamaChatModel extends AbstractToolCallSupport implements ChatMode
 	/**
 	 * Default options to be used for all chat requests.
 	 */
-	private OllamaOptions defaultOptions;
+	private final OllamaOptions defaultOptions;
 
-	public OllamaChatModel(OllamaApi chatApi) {
-		this(chatApi, OllamaOptions.create().withModel(OllamaOptions.DEFAULT_MODEL));
+	/**
+	 * Observation registry used for instrumentation.
+	 */
+	private final ObservationRegistry observationRegistry;
+
+	/**
+	 * Conventions to use for generating observations.
+	 */
+	private ChatModelObservationConvention observationConvention = DEFAULT_OBSERVATION_CONVENTION;
+
+	public OllamaChatModel(OllamaApi ollamaApi) {
+		this(ollamaApi, OllamaOptions.create().withModel(OllamaOptions.DEFAULT_MODEL));
 	}
 
-	public OllamaChatModel(OllamaApi chatApi, OllamaOptions defaultOptions) {
-		this(chatApi, defaultOptions, null);
+	public OllamaChatModel(OllamaApi ollamaApi, OllamaOptions defaultOptions) {
+		this(ollamaApi, defaultOptions, null);
 	}
 
-	public OllamaChatModel(OllamaApi chatApi, OllamaOptions defaultOptions,
+	public OllamaChatModel(OllamaApi ollamaApi, OllamaOptions defaultOptions,
 			FunctionCallbackContext functionCallbackContext) {
-		this(chatApi, defaultOptions, functionCallbackContext, List.of());
+		this(ollamaApi, defaultOptions, functionCallbackContext, List.of());
+	}
+
+	public OllamaChatModel(OllamaApi ollamaApi, OllamaOptions defaultOptions,
+			FunctionCallbackContext functionCallbackContext, List<FunctionCallback> toolFunctionCallbacks) {
+		this(ollamaApi, defaultOptions, functionCallbackContext, toolFunctionCallbacks, ObservationRegistry.NOOP);
 	}
 
 	public OllamaChatModel(OllamaApi chatApi, OllamaOptions defaultOptions,
-			FunctionCallbackContext functionCallbackContext, List<FunctionCallback> toolFunctionCallbacks) {
+			FunctionCallbackContext functionCallbackContext, List<FunctionCallback> toolFunctionCallbacks,
+			ObservationRegistry observationRegistry) {
 		super(functionCallbackContext, defaultOptions, toolFunctionCallbacks);
-		Assert.notNull(chatApi, "OllamaApi must not be null");
-		Assert.notNull(defaultOptions, "DefaultOptions must not be null");
+		Assert.notNull(chatApi, "ollamaApi must not be null");
+		Assert.notNull(defaultOptions, "defaultOptions must not be null");
+		Assert.notNull(observationRegistry, "ObservationRegistry must not be null");
 		this.chatApi = chatApi;
 		this.defaultOptions = defaultOptions;
+		this.observationRegistry = observationRegistry;
 	}
 
 	@Override
 	public ChatResponse call(Prompt prompt) {
+		OllamaApi.ChatRequest request = ollamaChatRequest(prompt, false);
 
-		OllamaApi.ChatResponse response = this.chatApi.chat(ollamaChatRequest(prompt, false));
+		ChatModelObservationContext observationContext = ChatModelObservationContext.builder()
+			.prompt(prompt)
+			.provider(OllamaApi.PROVIDER_NAME)
+			.requestOptions(buildRequestOptions(request))
+			.build();
 
-		List<AssistantMessage.ToolCall> toolCalls = response.message().toolCalls() == null ? List.of()
-				: response.message()
-					.toolCalls()
-					.stream()
-					.map(toolCall -> new AssistantMessage.ToolCall("", "function", toolCall.function().name(),
-							ModelOptionsUtils.toJsonString(toolCall.function().arguments())))
-					.toList();
+		ChatResponse response = ChatModelObservationDocumentation.CHAT_MODEL_OPERATION
+			.observation(this.observationConvention, DEFAULT_OBSERVATION_CONVENTION, () -> observationContext,
+					this.observationRegistry)
+			.observe(() -> {
 
-		var assistantMessage = new AssistantMessage(response.message().content(), Map.of(), toolCalls);
+				OllamaApi.ChatResponse ollamaResponse = this.chatApi.chat(request);
 
-		ChatGenerationMetadata generationMetadata = ChatGenerationMetadata.NULL;
-		if (response.promptEvalCount() != null && response.evalCount() != null) {
-			generationMetadata = ChatGenerationMetadata.from(response.doneReason(), null);
-		}
+				List<AssistantMessage.ToolCall> toolCalls = ollamaResponse.message().toolCalls() == null ? List.of()
+						: ollamaResponse.message()
+							.toolCalls()
+							.stream()
+							.map(toolCall -> new AssistantMessage.ToolCall("", "function", toolCall.function().name(),
+									ModelOptionsUtils.toJsonString(toolCall.function().arguments())))
+							.toList();
 
-		var generator = new Generation(assistantMessage, generationMetadata);
-		var chatResponse = new ChatResponse(List.of(generator), from(response));
+				var assistantMessage = new AssistantMessage(ollamaResponse.message().content(), Map.of(), toolCalls);
 
-		if (isToolCall(chatResponse, Set.of("stop"))) {
-			var toolCallConversation = handleToolCalls(prompt, chatResponse);
+				ChatGenerationMetadata generationMetadata = ChatGenerationMetadata.NULL;
+				if (ollamaResponse.promptEvalCount() != null && ollamaResponse.evalCount() != null) {
+					generationMetadata = ChatGenerationMetadata.from(ollamaResponse.doneReason(), null);
+				}
+
+				var generator = new Generation(assistantMessage, generationMetadata);
+				ChatResponse chatResponse = new ChatResponse(List.of(generator), from(ollamaResponse));
+
+				observationContext.setResponse(chatResponse);
+
+				return chatResponse;
+
+			});
+
+		if (!isProxyToolCalls(prompt, this.defaultOptions) && response != null
+				&& isToolCall(response, Set.of("stop"))) {
+			var toolCallConversation = handleToolCalls(prompt, response);
 			// Recursively call the call method with the tool call message
 			// conversation that contains the call responses.
 			return this.call(new Prompt(toolCallConversation, prompt.getOptions()));
 		}
 
-		return chatResponse;
+		return response;
 	}
 
 	public static ChatResponseMetadata from(OllamaApi.ChatResponse response) {
@@ -147,40 +192,69 @@ public class OllamaChatModel extends AbstractToolCallSupport implements ChatMode
 
 	@Override
 	public Flux<ChatResponse> stream(Prompt prompt) {
+		return Flux.deferContextual(contextView -> {
+			OllamaApi.ChatRequest request = ollamaChatRequest(prompt, true);
 
-		Flux<OllamaApi.ChatResponse> ollamaResponse = this.chatApi.streamingChat(ollamaChatRequest(prompt, true));
+			final ChatModelObservationContext observationContext = ChatModelObservationContext.builder()
+				.prompt(prompt)
+				.provider(OllamaApi.PROVIDER_NAME)
+				.requestOptions(buildRequestOptions(request))
+				.build();
 
-		Flux<ChatResponse> chatResponse = ollamaResponse.map(chunk -> {
-			String content = (chunk.message() != null) ? chunk.message().content() : "";
-			List<AssistantMessage.ToolCall> toolCalls = chunk.message().toolCalls() == null ? List.of()
-					: chunk.message()
+			Observation observation = ChatModelObservationDocumentation.CHAT_MODEL_OPERATION.observation(
+					this.observationConvention, DEFAULT_OBSERVATION_CONVENTION, () -> observationContext,
+					this.observationRegistry);
+
+			observation.parentObservation(contextView.getOrDefault(ObservationThreadLocalAccessor.KEY, null)).start();
+
+			Flux<OllamaApi.ChatResponse> ollamaResponse = this.chatApi.streamingChat(request);
+
+			Flux<ChatResponse> chatResponse = ollamaResponse.map(chunk -> {
+				String content = (chunk.message() != null) ? chunk.message().content() : "";
+
+				List<AssistantMessage.ToolCall> toolCalls = List.of();
+
+				// Added null checks to prevent NPE when accessing tool calls
+				if (chunk.message() != null && chunk.message().toolCalls() != null) {
+					toolCalls = chunk.message()
 						.toolCalls()
 						.stream()
 						.map(toolCall -> new AssistantMessage.ToolCall("", "function", toolCall.function().name(),
 								ModelOptionsUtils.toJsonString(toolCall.function().arguments())))
 						.toList();
+				}
 
-			var assistantMessage = new AssistantMessage(content, Map.of(), toolCalls);
+				var assistantMessage = new AssistantMessage(content, Map.of(), toolCalls);
 
-			ChatGenerationMetadata generationMetadata = ChatGenerationMetadata.NULL;
-			if (chunk.promptEvalCount() != null && chunk.evalCount() != null) {
-				generationMetadata = ChatGenerationMetadata.from(chunk.doneReason(), null);
-			}
+				ChatGenerationMetadata generationMetadata = ChatGenerationMetadata.NULL;
+				if (chunk.promptEvalCount() != null && chunk.evalCount() != null) {
+					generationMetadata = ChatGenerationMetadata.from(chunk.doneReason(), null);
+				}
 
-			var generator = new Generation(assistantMessage, generationMetadata);
-			return new ChatResponse(List.of(generator), from(chunk));
-		});
+				var generator = new Generation(assistantMessage, generationMetadata);
+				return new ChatResponse(List.of(generator), from(chunk));
+			});
 
-		return chatResponse.flatMap(response -> {
-			if (isToolCall(response, Set.of("stop"))) {
-				var toolCallConversation = handleToolCalls(prompt, response);
-				// Recursively call the stream method with the tool call message
-				// conversation that contains the call responses.
-				return this.stream(new Prompt(toolCallConversation, prompt.getOptions()));
-			}
-			else {
-				return Flux.just(response);
-			}
+			// @formatter:off
+			Flux<ChatResponse> chatResponseFlux = chatResponse.flatMap(response -> {
+				if (isToolCall(response, Set.of("stop"))) {
+					var toolCallConversation = handleToolCalls(prompt, response);
+					// Recursively call the stream method with the tool call message
+					// conversation that contains the call responses.
+					return this.stream(new Prompt(toolCallConversation, prompt.getOptions()));
+				}
+				else {
+					return Flux.just(response);
+				}
+			})
+			.doOnError(observation::error)
+			.doFinally(s -> {
+				observation.stop();
+			})
+			.contextWrite(ctx -> ctx.put(ObservationThreadLocalAccessor.KEY, observation));
+			// @formatter:on
+
+			return new MessageAggregator().aggregate(chatResponseFlux, observationContext::setResponse);
 		});
 	}
 
@@ -216,13 +290,10 @@ public class OllamaChatModel extends AbstractToolCallSupport implements ChatMode
 					.build());
 			}
 			else if (message instanceof ToolResponseMessage toolMessage) {
-
-				List<OllamaApi.Message> responseMessages = toolMessage.getResponses()
+				return toolMessage.getResponses()
 					.stream()
 					.map(tr -> OllamaApi.Message.builder(Role.TOOL).withContent(tr.responseData()).build())
 					.toList();
-
-				return responseMessages;
 			}
 			throw new IllegalArgumentException("Unsupported message type: " + message.getMessageType());
 		}).flatMap(List::stream).toList();
@@ -232,8 +303,14 @@ public class OllamaChatModel extends AbstractToolCallSupport implements ChatMode
 		// runtime options
 		OllamaOptions runtimeOptions = null;
 		if (prompt.getOptions() != null) {
-			runtimeOptions = ModelOptionsUtils.copyToTarget(prompt.getOptions(), ChatOptions.class,
-					OllamaOptions.class);
+			if (prompt.getOptions() instanceof FunctionCallingOptions functionCallingOptions) {
+				runtimeOptions = ModelOptionsUtils.copyToTarget(functionCallingOptions, FunctionCallingOptions.class,
+						OllamaOptions.class);
+			}
+			else {
+				runtimeOptions = ModelOptionsUtils.copyToTarget(prompt.getOptions(), ChatOptions.class,
+						OllamaOptions.class);
+			}
 			functionsForThisRequest.addAll(this.runtimeFunctionCallbackConfigurations(runtimeOptions));
 		}
 
@@ -290,9 +367,32 @@ public class OllamaChatModel extends AbstractToolCallSupport implements ChatMode
 		}).toList();
 	}
 
+	private ChatOptions buildRequestOptions(OllamaApi.ChatRequest request) {
+		var options = ModelOptionsUtils.mapToClass(request.options(), OllamaOptions.class);
+		return ChatOptionsBuilder.builder()
+			.withModel(request.model())
+			.withFrequencyPenalty(options.getFrequencyPenalty())
+			.withMaxTokens(options.getMaxTokens())
+			.withPresencePenalty(options.getPresencePenalty())
+			.withStopSequences(options.getStopSequences())
+			.withTemperature(options.getTemperature())
+			.withTopK(options.getTopK())
+			.withTopP(options.getTopP())
+			.build();
+	}
+
 	@Override
 	public ChatOptions getDefaultOptions() {
 		return OllamaOptions.fromOptions(this.defaultOptions);
+	}
+
+	/**
+	 * Use the provided convention for reporting observation data
+	 * @param observationConvention The provided convention
+	 */
+	public void setObservationConvention(ChatModelObservationConvention observationConvention) {
+		Assert.notNull(observationConvention, "observationConvention cannot be null");
+		this.observationConvention = observationConvention;
 	}
 
 }

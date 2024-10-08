@@ -13,7 +13,10 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
+
 package org.springframework.ai.vectorstore;
+
+import static org.springframework.data.mongodb.core.query.Criteria.where;
 
 import java.util.ArrayList;
 import java.util.Collections;
@@ -21,10 +24,16 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 
-import com.mongodb.MongoCommandException;
 import org.springframework.ai.document.Document;
+import org.springframework.ai.embedding.BatchingStrategy;
 import org.springframework.ai.embedding.EmbeddingModel;
+import org.springframework.ai.embedding.EmbeddingOptionsBuilder;
+import org.springframework.ai.embedding.TokenCountBatchingStrategy;
 import org.springframework.ai.model.EmbeddingUtils;
+import org.springframework.ai.observation.conventions.VectorStoreProvider;
+import org.springframework.ai.vectorstore.observation.AbstractObservationVectorStore;
+import org.springframework.ai.vectorstore.observation.VectorStoreObservationContext;
+import org.springframework.ai.vectorstore.observation.VectorStoreObservationConvention;
 import org.springframework.beans.factory.InitializingBean;
 import org.springframework.data.mongodb.UncategorizedMongoDbException;
 import org.springframework.data.mongodb.core.MongoTemplate;
@@ -33,14 +42,18 @@ import org.springframework.data.mongodb.core.query.Criteria;
 import org.springframework.data.mongodb.core.query.Query;
 import org.springframework.util.Assert;
 
-import static org.springframework.data.mongodb.core.query.Criteria.where;
+import com.mongodb.MongoCommandException;
+
+import io.micrometer.observation.ObservationRegistry;
 
 /**
  * @author Chris Smith
  * @author Soby Chacko
+ * @author Christian Tzolov
+ * @author Thomas Vitale
  * @since 1.0.0
  */
-public class MongoDBAtlasVectorStore implements VectorStore, InitializingBean {
+public class MongoDBAtlasVectorStore extends AbstractObservationVectorStore implements InitializingBean {
 
 	public static final String ID_FIELD_NAME = "_id";
 
@@ -50,7 +63,7 @@ public class MongoDBAtlasVectorStore implements VectorStore, InitializingBean {
 
 	public static final String SCORE_FIELD_NAME = "score";
 
-	private static final String DEFAULT_VECTOR_COLLECTION_NAME = "vector_store";
+	public static final String DEFAULT_VECTOR_COLLECTION_NAME = "vector_store";
 
 	private static final String DEFAULT_VECTOR_INDEX_NAME = "vector_index";
 
@@ -72,6 +85,8 @@ public class MongoDBAtlasVectorStore implements VectorStore, InitializingBean {
 
 	private final boolean initializeSchema;
 
+	private final BatchingStrategy batchingStrategy;
+
 	public MongoDBAtlasVectorStore(MongoTemplate mongoTemplate, EmbeddingModel embeddingModel,
 			boolean initializeSchema) {
 		this(mongoTemplate, embeddingModel, MongoDBVectorStoreConfig.defaultConfig(), initializeSchema);
@@ -79,11 +94,22 @@ public class MongoDBAtlasVectorStore implements VectorStore, InitializingBean {
 
 	public MongoDBAtlasVectorStore(MongoTemplate mongoTemplate, EmbeddingModel embeddingModel,
 			MongoDBVectorStoreConfig config, boolean initializeSchema) {
+		this(mongoTemplate, embeddingModel, config, initializeSchema, ObservationRegistry.NOOP, null,
+				new TokenCountBatchingStrategy());
+	}
+
+	public MongoDBAtlasVectorStore(MongoTemplate mongoTemplate, EmbeddingModel embeddingModel,
+			MongoDBVectorStoreConfig config, boolean initializeSchema, ObservationRegistry observationRegistry,
+			VectorStoreObservationConvention customObservationConvention, BatchingStrategy batchingStrategy) {
+
+		super(observationRegistry, customObservationConvention);
+
 		this.mongoTemplate = mongoTemplate;
 		this.embeddingModel = embeddingModel;
 		this.config = config;
 
 		this.initializeSchema = initializeSchema;
+		this.batchingStrategy = batchingStrategy;
 	}
 
 	@Override
@@ -156,16 +182,15 @@ public class MongoDBAtlasVectorStore implements VectorStore, InitializingBean {
 	}
 
 	@Override
-	public void add(List<Document> documents) {
+	public void doAdd(List<Document> documents) {
+		this.embeddingModel.embed(documents, EmbeddingOptionsBuilder.builder().build(), this.batchingStrategy);
 		for (Document document : documents) {
-			float[] embedding = this.embeddingModel.embed(document);
-			document.setEmbedding(embedding);
 			this.mongoTemplate.save(document, this.config.collectionName);
 		}
 	}
 
 	@Override
-	public Optional<Boolean> delete(List<String> idList) {
+	public Optional<Boolean> doDelete(List<String> idList) {
 		Query query = new Query(where(ID_FIELD_NAME).in(idList));
 
 		var deleteRes = this.mongoTemplate.remove(query, this.config.collectionName);
@@ -180,7 +205,7 @@ public class MongoDBAtlasVectorStore implements VectorStore, InitializingBean {
 	}
 
 	@Override
-	public List<Document> similaritySearch(SearchRequest request) {
+	public List<Document> doSimilaritySearch(SearchRequest request) {
 
 		String nativeFilterExpressions = (request.getFilterExpression() != null)
 				? this.filterExpressionConverter.convertExpression(request.getFilterExpression()) : "";
@@ -297,6 +322,15 @@ public class MongoDBAtlasVectorStore implements VectorStore, InitializingBean {
 
 		}
 
+	}
+
+	@Override
+	public VectorStoreObservationContext.Builder createObservationContextBuilder(String operationName) {
+
+		return VectorStoreObservationContext.builder(VectorStoreProvider.MONGODB.value(), operationName)
+			.withCollectionName(this.config.collectionName)
+			.withDimensions(this.embeddingModel.dimensions())
+			.withFieldName(this.config.pathName);
 	}
 
 }

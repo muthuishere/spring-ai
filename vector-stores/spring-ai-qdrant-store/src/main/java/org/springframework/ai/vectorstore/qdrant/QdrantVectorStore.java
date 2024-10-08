@@ -1,5 +1,5 @@
 /*
- * Copyright 2023 - 2024 the original author or authors.
+ * Copyright 2023-2024 the original author or authors.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -13,6 +13,7 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
+
 package org.springframework.ai.vectorstore.qdrant;
 
 import static io.qdrant.client.PointIdFactory.id;
@@ -27,13 +28,21 @@ import java.util.UUID;
 import java.util.concurrent.ExecutionException;
 
 import org.springframework.ai.document.Document;
+import org.springframework.ai.embedding.BatchingStrategy;
 import org.springframework.ai.embedding.EmbeddingModel;
+import org.springframework.ai.embedding.EmbeddingOptionsBuilder;
+import org.springframework.ai.embedding.TokenCountBatchingStrategy;
 import org.springframework.ai.model.EmbeddingUtils;
+import org.springframework.ai.observation.conventions.VectorStoreProvider;
+import org.springframework.ai.observation.conventions.VectorStoreSimilarityMetric;
 import org.springframework.ai.vectorstore.SearchRequest;
-import org.springframework.ai.vectorstore.VectorStore;
+import org.springframework.ai.vectorstore.observation.AbstractObservationVectorStore;
+import org.springframework.ai.vectorstore.observation.VectorStoreObservationContext;
+import org.springframework.ai.vectorstore.observation.VectorStoreObservationConvention;
 import org.springframework.beans.factory.InitializingBean;
 import org.springframework.util.Assert;
 
+import io.micrometer.observation.ObservationRegistry;
 import io.qdrant.client.QdrantClient;
 import io.qdrant.client.grpc.Collections.Distance;
 import io.qdrant.client.grpc.Collections.VectorParams;
@@ -53,9 +62,10 @@ import io.qdrant.client.grpc.Points.UpdateStatus;
  * @author Christian Tzolov
  * @author Eddú Meléndez
  * @author Josh Long
+ * @author Soby Chacko
  * @since 0.8.1
  */
-public class QdrantVectorStore implements VectorStore, InitializingBean {
+public class QdrantVectorStore extends AbstractObservationVectorStore implements InitializingBean {
 
 	private static final String CONTENT_FIELD_NAME = "doc_content";
 
@@ -72,6 +82,8 @@ public class QdrantVectorStore implements VectorStore, InitializingBean {
 	private final QdrantFilterExpressionConverter filterExpressionConverter = new QdrantFilterExpressionConverter();
 
 	private final boolean initializeSchema;
+
+	private final BatchingStrategy batchingStrategy;
 
 	/**
 	 * Configuration class for the QdrantVectorStore.
@@ -152,9 +164,29 @@ public class QdrantVectorStore implements VectorStore, InitializingBean {
 	 * @param qdrantClient A {@link QdrantClient} instance for interfacing with Qdrant.
 	 * @param collectionName The name of the collection to use in Qdrant.
 	 * @param embeddingModel The client for embedding operations.
+	 * @param initializeSchema A boolean indicating whether to initialize the schema.
 	 */
 	public QdrantVectorStore(QdrantClient qdrantClient, String collectionName, EmbeddingModel embeddingModel,
 			boolean initializeSchema) {
+		this(qdrantClient, collectionName, embeddingModel, initializeSchema, ObservationRegistry.NOOP, null,
+				new TokenCountBatchingStrategy());
+	}
+
+	/**
+	 * Constructs a new QdrantVectorStore.
+	 * @param qdrantClient A {@link QdrantClient} instance for interfacing with Qdrant.
+	 * @param collectionName The name of the collection to use in Qdrant.
+	 * @param embeddingModel The client for embedding operations.
+	 * @param initializeSchema A boolean indicating whether to initialize the schema.
+	 * @param observationRegistry The observation registry to use.
+	 * @param customObservationConvention The custom search observation convention to use.
+	 */
+	public QdrantVectorStore(QdrantClient qdrantClient, String collectionName, EmbeddingModel embeddingModel,
+			boolean initializeSchema, ObservationRegistry observationRegistry,
+			VectorStoreObservationConvention customObservationConvention, BatchingStrategy batchingStrategy) {
+
+		super(observationRegistry, customObservationConvention);
+
 		Assert.notNull(qdrantClient, "QdrantClient must not be null");
 		Assert.notNull(collectionName, "collectionName must not be null");
 		Assert.notNull(embeddingModel, "EmbeddingModel must not be null");
@@ -163,6 +195,7 @@ public class QdrantVectorStore implements VectorStore, InitializingBean {
 		this.embeddingModel = embeddingModel;
 		this.collectionName = collectionName;
 		this.qdrantClient = qdrantClient;
+		this.batchingStrategy = batchingStrategy;
 	}
 
 	/**
@@ -170,18 +203,19 @@ public class QdrantVectorStore implements VectorStore, InitializingBean {
 	 * @param documents The list of documents to be added.
 	 */
 	@Override
-	public void add(List<Document> documents) {
+	public void doAdd(List<Document> documents) {
 		try {
-			List<PointStruct> points = documents.stream().map(document -> {
-				// Compute and assign an embedding to the document.
-				document.setEmbedding(this.embeddingModel.embed(document));
 
-				return PointStruct.newBuilder()
+			// Compute and assign an embedding to the document.
+			this.embeddingModel.embed(documents, EmbeddingOptionsBuilder.builder().build(), this.batchingStrategy);
+
+			List<PointStruct> points = documents.stream()
+				.map(document -> PointStruct.newBuilder()
 					.setId(id(UUID.fromString(document.getId())))
 					.setVectors(vectors(document.getEmbedding()))
 					.putAllPayload(toPayload(document))
-					.build();
-			}).toList();
+					.build())
+				.toList();
 
 			this.qdrantClient.upsertAsync(this.collectionName, points).get();
 		}
@@ -196,7 +230,7 @@ public class QdrantVectorStore implements VectorStore, InitializingBean {
 	 * @return An optional boolean indicating the deletion status.
 	 */
 	@Override
-	public Optional<Boolean> delete(List<String> documentIds) {
+	public Optional<Boolean> doDelete(List<String> documentIds) {
 		try {
 			List<PointId> ids = documentIds.stream().map(id -> id(UUID.fromString(id))).toList();
 			var result = this.qdrantClient.deleteAsync(this.collectionName, ids)
@@ -216,7 +250,7 @@ public class QdrantVectorStore implements VectorStore, InitializingBean {
 	 * @return A list of documents that are similar to the query.
 	 */
 	@Override
-	public List<Document> similaritySearch(SearchRequest request) {
+	public List<Document> doSimilaritySearch(SearchRequest request) {
 		try {
 			Filter filter = (request.getFilterExpression() != null)
 					? this.filterExpressionConverter.convertExpression(request.getFilterExpression())
@@ -305,6 +339,15 @@ public class QdrantVectorStore implements VectorStore, InitializingBean {
 		catch (Exception e) {
 			throw new RuntimeException(e);
 		}
+	}
+
+	@Override
+	public VectorStoreObservationContext.Builder createObservationContextBuilder(String operationName) {
+
+		return VectorStoreObservationContext.builder(VectorStoreProvider.QDRANT.value(), operationName)
+			.withDimensions(this.embeddingModel.dimensions())
+			.withCollectionName(this.collectionName);
+
 	}
 
 }

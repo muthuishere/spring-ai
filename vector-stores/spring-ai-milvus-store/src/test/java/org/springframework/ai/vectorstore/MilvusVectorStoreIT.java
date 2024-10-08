@@ -34,6 +34,7 @@ import org.testcontainers.junit.jupiter.Testcontainers;
 
 import org.springframework.ai.document.Document;
 import org.springframework.ai.embedding.EmbeddingModel;
+import org.springframework.ai.embedding.TokenCountBatchingStrategy;
 import org.springframework.ai.openai.OpenAiEmbeddingModel;
 import org.springframework.ai.openai.api.OpenAiApi;
 import org.springframework.ai.vectorstore.MilvusVectorStore.MilvusVectorStoreConfig;
@@ -51,13 +52,14 @@ import static org.assertj.core.api.Assertions.assertThat;
 /**
  * @author Christian Tzolov
  * @author Eddú Meléndez
+ * @author Thomas Vitale
  */
 @Testcontainers
 @EnabledIfEnvironmentVariable(named = "OPENAI_API_KEY", matches = ".+")
 public class MilvusVectorStoreIT {
 
 	@Container
-	private static MilvusContainer milvusContainer = new MilvusContainer("milvusdb/milvus:v2.3.8");
+	private static MilvusContainer milvusContainer = new MilvusContainer(MilvusImage.DEFAULT_IMAGE);
 
 	private final ApplicationContextRunner contextRunner = new ApplicationContextRunner()
 		.withUserConfiguration(TestApplication.class);
@@ -265,7 +267,7 @@ public class MilvusVectorStoreIT {
 				.withIndexType(IndexType.IVF_FLAT)
 				.withMetricType(metricType)
 				.build();
-			return new MilvusVectorStore(milvusClient, embeddingModel, config, true);
+			return new MilvusVectorStore(milvusClient, embeddingModel, config, true, new TokenCountBatchingStrategy());
 		}
 
 		@Bean

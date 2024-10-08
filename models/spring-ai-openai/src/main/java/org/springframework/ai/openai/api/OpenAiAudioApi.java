@@ -62,7 +62,7 @@ public class OpenAiAudioApi {
 	}
 
 	/**
-	 * Create an new chat completion api.
+	 * Create a new audio api.
 	 * @param baseUrl api base URL.
 	 * @param openAiToken OpenAI apiKey.
 	 * @param restClientBuilder RestClient builder.
@@ -81,7 +81,7 @@ public class OpenAiAudioApi {
 	}
 
 	/**
-	 * Create an new chat completion api.
+	 * Create a new audio api.
 	 * @param baseUrl api base URL.
 	 * @param apiKey OpenAI apiKey.
 	 * @param restClientBuilder RestClient builder.
@@ -96,7 +96,7 @@ public class OpenAiAudioApi {
 	}
 
 	/**
-	 * Create an new chat completion api.
+	 * Create a new audio api.
 	 * @param baseUrl api base URL.
 	 * @param apiKey OpenAI apiKey.
 	 * @param headers the http headers to use.
@@ -171,8 +171,8 @@ public class OpenAiAudioApi {
 	 * chosen model: 'alloy', 'echo', 'fable', 'onyx', 'nova', and 'shimmer'.
 	 * @param responseFormat The format to audio in. Supported formats are mp3, opus, aac,
 	 * and flac. Defaults to mp3.
-	 * @param speed The speed of the voice synthesis. The acceptable range is from 0.0
-	 * (slowest) to 1.0 (fastest).
+	 * @param speed The speed of the voice synthesis. The acceptable range is from 0.25
+	 * (slowest) to 4.0 (fastest).
 	 */
 	@JsonInclude(Include.NON_NULL)
 	public record SpeechRequest(

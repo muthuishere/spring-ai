@@ -23,11 +23,10 @@ import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Consumer;
 import java.util.function.Predicate;
 
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
 import org.springframework.ai.anthropic.api.StreamHelper.ChatCompletionResponseBuilder;
 import org.springframework.ai.model.ChatModelDescription;
 import org.springframework.ai.model.ModelOptionsUtils;
+import org.springframework.ai.observation.conventions.AiProvider;
 import org.springframework.ai.retry.RetryUtils;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpStatusCode;
@@ -51,11 +50,12 @@ import reactor.core.publisher.Mono;
 /**
  * @author Christian Tzolov
  * @author Mariusz Bernacki
+ * @author Thomas Vitale
  * @since 1.0.0
  */
 public class AnthropicApi {
 
-	private static final Logger logger = LoggerFactory.getLogger(AnthropicApi.class);
+	public static final String PROVIDER_NAME = AiProvider.ANTHROPIC.value();
 
 	private static final String HEADER_X_API_KEY = "x-api-key";
 
@@ -91,7 +91,7 @@ public class AnthropicApi {
 	 * @param anthropicApiKey Anthropic api Key.
 	 */
 	public AnthropicApi(String baseUrl, String anthropicApiKey) {
-		this(baseUrl, anthropicApiKey, DEFAULT_ANTHROPIC_VERSION, RestClient.builder(),
+		this(baseUrl, anthropicApiKey, DEFAULT_ANTHROPIC_VERSION, RestClient.builder(), WebClient.builder(),
 				RetryUtils.DEFAULT_RESPONSE_ERROR_HANDLER);
 	}
 
@@ -103,8 +103,9 @@ public class AnthropicApi {
 	 * @param responseErrorHandler Response error handler.
 	 */
 	public AnthropicApi(String baseUrl, String anthropicApiKey, String anthropicVersion,
-			RestClient.Builder restClientBuilder, ResponseErrorHandler responseErrorHandler) {
-		this(baseUrl, anthropicApiKey, anthropicVersion, restClientBuilder, responseErrorHandler,
+			RestClient.Builder restClientBuilder, WebClient.Builder webClientBuilder,
+			ResponseErrorHandler responseErrorHandler) {
+		this(baseUrl, anthropicApiKey, anthropicVersion, restClientBuilder, webClientBuilder, responseErrorHandler,
 				DEFAULT_ANTHROPIC_BETA_VERSION);
 	}
 
@@ -117,8 +118,8 @@ public class AnthropicApi {
 	 * @param anthropicBetaFeatures Anthropic beta features.
 	 */
 	public AnthropicApi(String baseUrl, String anthropicApiKey, String anthropicVersion,
-			RestClient.Builder restClientBuilder, ResponseErrorHandler responseErrorHandler,
-			String anthropicBetaFeatures) {
+			RestClient.Builder restClientBuilder, WebClient.Builder webClientBuilder,
+			ResponseErrorHandler responseErrorHandler, String anthropicBetaFeatures) {
 
 		Consumer<HttpHeaders> jsonContentHeaders = headers -> {
 			headers.add(HEADER_X_API_KEY, anthropicApiKey);
@@ -132,8 +133,7 @@ public class AnthropicApi {
 			.defaultStatusHandler(responseErrorHandler)
 			.build();
 
-		this.webClient = WebClient.builder()
-			.baseUrl(baseUrl)
+		this.webClient = webClientBuilder.baseUrl(baseUrl)
 			.defaultHeaders(jsonContentHeaders)
 			.defaultStatusHandler(HttpStatusCode::isError,
 					resp -> Mono.just(new RuntimeException("Response exception, Status: [" + resp.statusCode()
@@ -241,19 +241,19 @@ public class AnthropicApi {
 		@JsonProperty("metadata") Metadata metadata,
 		@JsonProperty("stop_sequences") List<String> stopSequences,
 		@JsonProperty("stream") Boolean stream,
-		@JsonProperty("temperature") Float temperature,
-		@JsonProperty("top_p") Float topP,
+		@JsonProperty("temperature") Double temperature,
+		@JsonProperty("top_p") Double topP,
 		@JsonProperty("top_k") Integer topK,
 		@JsonProperty("tools") List<Tool> tools) {
 		// @formatter:on
 
 		public ChatCompletionRequest(String model, List<AnthropicMessage> messages, String system, Integer maxTokens,
-				Float temperature, Boolean stream) {
+				Double temperature, Boolean stream) {
 			this(model, messages, system, maxTokens, null, null, stream, temperature, null, null, null);
 		}
 
 		public ChatCompletionRequest(String model, List<AnthropicMessage> messages, String system, Integer maxTokens,
-				List<String> stopSequences, Float temperature, Boolean stream) {
+				List<String> stopSequences, Double temperature, Boolean stream) {
 			this(model, messages, system, maxTokens, null, stopSequences, stream, temperature, null, null, null);
 		}
 
@@ -292,9 +292,9 @@ public class AnthropicApi {
 
 		private Boolean stream = false;
 
-		private Float temperature;
+		private Double temperature;
 
-		private Float topP;
+		private Double topP;
 
 		private Integer topK;
 
@@ -357,12 +357,12 @@ public class AnthropicApi {
 			return this;
 		}
 
-		public ChatCompletionRequestBuilder withTemperature(Float temperature) {
+		public ChatCompletionRequestBuilder withTemperature(Double temperature) {
 			this.temperature = temperature;
 			return this;
 		}
 
-		public ChatCompletionRequestBuilder withTopP(Float topP) {
+		public ChatCompletionRequestBuilder withTopP(Double topP) {
 			this.topP = topP;
 			return this;
 		}

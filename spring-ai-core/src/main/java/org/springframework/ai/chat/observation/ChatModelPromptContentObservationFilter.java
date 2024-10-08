@@ -17,9 +17,7 @@ package org.springframework.ai.chat.observation;
 
 import io.micrometer.observation.Observation;
 import io.micrometer.observation.ObservationFilter;
-import org.springframework.util.CollectionUtils;
-
-import java.util.StringJoiner;
+import org.springframework.ai.observation.tracing.TracingHelper;
 
 /**
  * An {@link ObservationFilter} to include the chat prompt content in the observation.
@@ -35,18 +33,11 @@ public class ChatModelPromptContentObservationFilter implements ObservationFilte
 			return context;
 		}
 
-		if (CollectionUtils.isEmpty(chatModelObservationContext.getRequest().getInstructions())) {
-			return chatModelObservationContext;
-		}
-
-		StringJoiner promptMessagesJoiner = new StringJoiner(", ", "[", "]");
-		chatModelObservationContext.getRequest()
-			.getInstructions()
-			.forEach(message -> promptMessagesJoiner.add("\"" + message.getContent() + "\""));
+		var prompts = ChatModelObservationContentProcessor.prompt(chatModelObservationContext);
 
 		chatModelObservationContext
 			.addHighCardinalityKeyValue(ChatModelObservationDocumentation.HighCardinalityKeyNames.PROMPT
-				.withValue(promptMessagesJoiner.toString()));
+				.withValue(TracingHelper.concatenateStrings(prompts)));
 
 		return chatModelObservationContext;
 	}

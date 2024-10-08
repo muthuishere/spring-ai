@@ -20,27 +20,41 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Collections;
+import java.util.stream.StreamSupport;
 
 import com.fasterxml.jackson.core.type.TypeReference;
+import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 
 import org.springframework.ai.document.Document;
 import org.springframework.ai.document.DocumentReader;
 import org.springframework.core.io.Resource;
 
+/**
+ * A class that reads JSON documents and converts them into a list of {@link Document}
+ * objects.
+ *
+ * @author Mark Pollack
+ * @author Christian Tzolov
+ * @author rivkode
+ * @since 1.0.0
+ */
 public class JsonReader implements DocumentReader {
 
-	private Resource resource;
+	private final Resource resource;
 
-	private JsonMetadataGenerator jsonMetadataGenerator;
+	private final JsonMetadataGenerator jsonMetadataGenerator;
+
+	private final ObjectMapper objectMapper = new ObjectMapper();
 
 	/**
 	 * The key from the JSON that we will use as the text to parse into the Document text
 	 */
-	private List<String> jsonKeysToUse;
+	private final List<String> jsonKeysToUse;
 
 	public JsonReader(Resource resource) {
-		this(resource, new ArrayList<>().toArray(new String[0]));
+		this(resource, new String[0]);
 	}
 
 	public JsonReader(Resource resource, String... jsonKeysToUse) {
@@ -58,41 +72,68 @@ public class JsonReader implements DocumentReader {
 
 	@Override
 	public List<Document> get() {
-		ObjectMapper objectMapper = new ObjectMapper();
-		List<Document> documents = new ArrayList<>();
 		try {
-			// TODO, not all json will be an array
-			List<Map<String, Object>> jsonData = objectMapper.readValue(this.resource.getInputStream(),
-					new TypeReference<List<Map<String, Object>>>() {
-					});
-			for (Map<String, Object> item : jsonData) {
-				StringBuilder sb = new StringBuilder();
-				for (String key : jsonKeysToUse) {
-					if (item.containsKey(key)) {
-						sb.append(key);
-						sb.append(": ");
-						sb.append(item.get(key));
-						sb.append(System.lineSeparator());
-					}
-				}
+			JsonNode rootNode = objectMapper.readTree(this.resource.getInputStream());
 
-				Map<String, Object> metadata = this.jsonMetadataGenerator.generate(item);
-
-				Document document;
-				if (!sb.isEmpty()) {
-					document = new Document(sb.toString(), metadata);
-				}
-				else {
-					document = new Document(item.toString(), metadata);
-				}
-
-				documents.add(document);
+			if (rootNode.isArray()) {
+				return StreamSupport.stream(rootNode.spliterator(), true)
+					.map(jsonNode -> parseJsonNode(jsonNode, objectMapper))
+					.toList();
+			}
+			else {
+				return Collections.singletonList(parseJsonNode(rootNode, objectMapper));
 			}
 		}
 		catch (IOException e) {
 			throw new RuntimeException(e);
 		}
-		return documents;
+	}
+
+	private Document parseJsonNode(JsonNode jsonNode, ObjectMapper objectMapper) {
+		Map<String, Object> item = objectMapper.convertValue(jsonNode, new TypeReference<Map<String, Object>>() {
+		});
+		var sb = new StringBuilder();
+
+		jsonKeysToUse.stream().filter(item::containsKey).forEach(key -> {
+			sb.append(key).append(": ").append(item.get(key)).append(System.lineSeparator());
+		});
+
+		Map<String, Object> metadata = this.jsonMetadataGenerator.generate(item);
+		String content = sb.isEmpty() ? item.toString() : sb.toString();
+		return new Document(content, metadata);
+	}
+
+	protected List<Document> get(JsonNode rootNode) {
+		if (rootNode.isArray()) {
+			return StreamSupport.stream(rootNode.spliterator(), true)
+				.map(jsonNode -> parseJsonNode(jsonNode, objectMapper))
+				.toList();
+		}
+		else {
+			return Collections.singletonList(parseJsonNode(rootNode, objectMapper));
+		}
+	}
+
+	/**
+	 * Retrieves documents from the JSON resource using a JSON Pointer.
+	 * @param pointer A JSON Pointer string (RFC 6901) to locate the desired element
+	 * @return A list of Documents parsed from the located JSON element
+	 * @throws RuntimeException if the JSON cannot be parsed or the pointer is invalid
+	 */
+	public List<Document> get(String pointer) {
+		try {
+			JsonNode rootNode = objectMapper.readTree(this.resource.getInputStream());
+			JsonNode targetNode = rootNode.at(pointer);
+
+			if (targetNode.isMissingNode()) {
+				throw new IllegalArgumentException("Invalid JSON Pointer: " + pointer);
+			}
+
+			return get(targetNode);
+		}
+		catch (IOException e) {
+			throw new RuntimeException("Error reading JSON resource", e);
+		}
 	}
 
 }

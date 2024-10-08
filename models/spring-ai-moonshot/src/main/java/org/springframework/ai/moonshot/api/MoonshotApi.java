@@ -34,6 +34,7 @@ import reactor.core.publisher.Mono;
 
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.Consumer;
 import java.util.function.Predicate;
 
@@ -47,16 +48,19 @@ import static org.springframework.ai.moonshot.api.MoonshotConstants.DEFAULT_BASE
  * </p>
  *
  * @author Geng Rong
+ * @author Thomas Vitale
  */
 public class MoonshotApi {
 
-	public static final String DEFAULT_CHAT_MODEL = ChatModel.MOONSHOT_V1_32K.getValue();
+	public static final String DEFAULT_CHAT_MODEL = ChatModel.MOONSHOT_V1_8K.getValue();
 
 	private static final Predicate<String> SSE_DONE_PREDICATE = "[DONE]"::equals;
 
 	private final RestClient restClient;
 
 	private final WebClient webClient;
+
+	private final MoonshotStreamFunctionCallingHelper chunkMerger = new MoonshotStreamFunctionCallingHelper();
 
 	/**
 	 * Create a new client api with DEFAULT_BASE_URL
@@ -152,11 +156,11 @@ public class MoonshotApi {
             @JsonProperty("messages") List<ChatCompletionMessage> messages,
             @JsonProperty("model") String model,
             @JsonProperty("max_tokens") Integer maxTokens,
-            @JsonProperty("temperature") Float temperature,
-            @JsonProperty("top_p") Float topP,
+            @JsonProperty("temperature") Double temperature,
+            @JsonProperty("top_p") Double topP,
             @JsonProperty("n") Integer n,
-            @JsonProperty("frequency_penalty") Float frequencyPenalty,
-            @JsonProperty("presence_penalty") Float presencePenalty,
+            @JsonProperty("frequency_penalty") Double frequencyPenalty,
+            @JsonProperty("presence_penalty") Double presencePenalty,
             @JsonProperty("stop") List<String> stop,
             @JsonProperty("stream") Boolean stream,
 			@JsonProperty("tools") List<FunctionTool> tools,
@@ -171,7 +175,7 @@ public class MoonshotApi {
 		 * @param model ID of the model to use.
 		 */
 		public ChatCompletionRequest(List<ChatCompletionMessage> messages, String model) {
-			this(messages, model, null, 0.3f, 1f, null, null, null, null, false, null, null);
+			this(messages, model, null, 0.3, 1.0, null, null, null, null, false, null, null);
 		}
 
 		/**
@@ -184,9 +188,9 @@ public class MoonshotApi {
 		 * @param stream Whether to stream back partial progress. If set, tokens will be
 		 * sent
 		 */
-		public ChatCompletionRequest(List<ChatCompletionMessage> messages, String model, Float temperature,
+		public ChatCompletionRequest(List<ChatCompletionMessage> messages, String model, Double temperature,
 				boolean stream) {
-			this(messages, model, null, temperature, 1f, null, null, null, null, stream, null, null);
+			this(messages, model, null, temperature, 1.0, null, null, null, null, stream, null, null);
 		}
 
 		/**
@@ -197,8 +201,8 @@ public class MoonshotApi {
 		 * @param model ID of the model to use.
 		 * @param temperature What sampling temperature to use, between 0.0 and 1.0.
 		 */
-		public ChatCompletionRequest(List<ChatCompletionMessage> messages, String model, Float temperature) {
-			this(messages, model, null, temperature, 1f, null, null, null, null, false, null, null);
+		public ChatCompletionRequest(List<ChatCompletionMessage> messages, String model, Double temperature) {
+			this(messages, model, null, temperature, 1.0, null, null, null, null, false, null, null);
 		}
 
 		/**
@@ -213,7 +217,7 @@ public class MoonshotApi {
 		 */
 		public ChatCompletionRequest(List<ChatCompletionMessage> messages, String model, List<FunctionTool> tools,
 				Object toolChoice) {
-			this(messages, model, null, null, 1f, null, null, null, null, false, tools, toolChoice);
+			this(messages, model, null, null, 1.0, null, null, null, null, false, tools, toolChoice);
 		}
 
 		/**
@@ -221,7 +225,7 @@ public class MoonshotApi {
 		 * stream.
 		 */
 		public ChatCompletionRequest(List<ChatCompletionMessage> messages, Boolean stream) {
-			this(messages, DEFAULT_CHAT_MODEL, null, 0.7f, 1F, null, null, null, null, stream, null, null);
+			this(messages, DEFAULT_CHAT_MODEL, null, 0.7, 1.0, null, null, null, null, stream, null, null);
 		}
 
 		/**
@@ -589,16 +593,47 @@ public class MoonshotApi {
 	 */
 	public Flux<ChatCompletionChunk> chatCompletionStream(ChatCompletionRequest chatRequest) {
 		Assert.notNull(chatRequest, "The request body can not be null.");
-		Assert.isTrue(chatRequest.stream(), "Request must set the stream property to true.");
+		Assert.isTrue(chatRequest.stream(), "Request must set the steam property to true.");
+		AtomicBoolean isInsideTool = new AtomicBoolean(false);
 
 		return this.webClient.post()
 			.uri("/v1/chat/completions")
 			.body(Mono.just(chatRequest), ChatCompletionRequest.class)
 			.retrieve()
 			.bodyToFlux(String.class)
+			// cancels the flux stream after the "[DONE]" is received.
 			.takeUntil(SSE_DONE_PREDICATE)
+			// filters out the "[DONE]" message.
 			.filter(SSE_DONE_PREDICATE.negate())
-			.map(content -> ModelOptionsUtils.jsonToObject(content, ChatCompletionChunk.class));
+			.map(content -> ModelOptionsUtils.jsonToObject(content, ChatCompletionChunk.class))
+			// Detect is the chunk is part of a streaming function call.
+			.map(chunk -> {
+				if (this.chunkMerger.isStreamingToolFunctionCall(chunk)) {
+					isInsideTool.set(true);
+				}
+				return chunk;
+			})
+			// Group all chunks belonging to the same function call.
+			// Flux<ChatCompletionChunk> -> Flux<Flux<ChatCompletionChunk>>
+			.windowUntil(chunk -> {
+				if (isInsideTool.get() && this.chunkMerger.isStreamingToolFunctionCallFinish(chunk)) {
+					isInsideTool.set(false);
+					return true;
+				}
+				return !isInsideTool.get();
+			})
+			// Merging the window chunks into a single chunk.
+			// Reduce the inner Flux<ChatCompletionChunk> window into a single
+			// Mono<ChatCompletionChunk>,
+			// Flux<Flux<ChatCompletionChunk>> -> Flux<Mono<ChatCompletionChunk>>
+			.concatMapIterable(window -> {
+				Mono<ChatCompletionChunk> monoChunk = window.reduce(
+						new ChatCompletionChunk(null, null, null, null, null),
+						(previous, current) -> this.chunkMerger.merge(previous, current));
+				return List.of(monoChunk);
+			})
+			// Flux<Mono<ChatCompletionChunk>> -> Flux<ChatCompletionChunk>
+			.flatMap(mono -> mono);
 	}
 
 }

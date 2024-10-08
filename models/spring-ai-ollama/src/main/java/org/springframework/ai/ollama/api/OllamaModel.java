@@ -22,7 +22,7 @@ import org.springframework.ai.model.ChatModelDescription;
  *
  * @author Siarhei Blashuk
  * @author Thomas Vitale
- * @since 0.8.1
+ * @since 1.0.0
  */
 public enum OllamaModel implements ChatModelDescription {
 
@@ -40,6 +40,16 @@ public enum OllamaModel implements ChatModelDescription {
 	 * The 8B language model from Meta.
 	 */
 	LLAMA3_1("llama3.1"),
+
+	/**
+	 * The Llama 3.2 3B language model from Meta.
+	 */
+	LLAMA3_2("llama3.2"),
+
+	/**
+	 * The Llama 3.2 1B language model from Meta.
+	 */
+	LLAMA3_2_1B("llama3.2:1b"),
 
 	/**
 	 * The 7B parameters model
@@ -106,7 +116,12 @@ public enum OllamaModel implements ChatModelDescription {
 	/**
 	 * Uncensored Llama 2 model
 	 */
-	LLAMA2_UNCENSORED("llama2-uncensored");
+	LLAMA2_UNCENSORED("llama2-uncensored"),
+
+	/**
+	 * A high-performing open embedding model with a large token context window.
+	 */
+	NOMIC_EMBED_TEXT("nomic-embed-text");
 
 	private final String id;
 

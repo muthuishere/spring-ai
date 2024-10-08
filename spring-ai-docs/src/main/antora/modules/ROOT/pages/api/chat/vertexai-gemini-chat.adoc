@@ -67,6 +67,8 @@ The prefix `spring.ai.vertex.ai.gemini.chat` is the property prefix that lets yo
 | Property | Description | Default
 
 | spring.ai.vertex.ai.gemini.chat.options.model | Supported https://cloud.google.com/vertex-ai/docs/generative-ai/model-reference/gemini[Vertex AI Gemini Chat model] to use include the (1.0 ) `gemini-pro`, `gemini-pro-vision` (deprecated) and the new `gemini-1.5-pro-001`, `gemini-1.5-flash-001` models. | gemini-1.5-pro-001
+| spring.ai.vertex.ai.gemini.chat.options.responseMimeType | Output response mimetype of the generated candidate text. |  `text/plain`: (default) Text output or `application/json`: JSON response.
+| spring.ai.vertex.ai.gemini.chat.options.googleSearchRetrieval | Use Google search Grounding feature | `true` or `false`, default `false`.
 | spring.ai.vertex.ai.gemini.chat.options.temperature | Controls the randomness of the output. Values can range over [0.0,1.0], inclusive. A value closer to 1.0 will produce responses that are more varied, while a value closer to 0.0 will typically result in less surprising responses from the generative. This value specifies default to be used by the backend while making the call to the generative. | 0.8
 | spring.ai.vertex.ai.gemini.chat.options.topK | The maximum number of tokens to consider when sampling. The generative uses combined Top-k and nucleus sampling. Top-k sampling considers the set of topK most probable tokens. | -
 | spring.ai.vertex.ai.gemini.chat.options.topP | The maximum cumulative probability of tokens to consider when sampling. The generative uses combined Top-k and nucleus sampling. Nucleus sampling considers the smallest set of tokens whose probability sum is at least topP.  | -
@@ -76,6 +78,7 @@ The prefix `spring.ai.vertex.ai.gemini.chat` is the property prefix that lets yo
 | spring.ai.vertex.ai.gemini.chat.options.frequencyPenalty |  | -
 | spring.ai.vertex.ai.gemini.chat.options.presencePenalty |  | -
 | spring.ai.vertex.ai.gemini.chat.options.functions | List of functions, identified by their names, to enable for function calling in a single prompt requests. Functions with those names must exist in the functionCallbacks registry. | -
+| spring.ai.vertex.ai.gemini.chat.options.proxy-tool-calls | If true, the Spring AI will not handle the function calls internally, but will proxy them to the client. Then is the client's responsibility to handle the function calls, dispatch them to the appropriate function, and return the results. If false (the default), the Spring AI will handle the function calls internally. Applicable only for chat models with function calling support | false
 
 |====
 
@@ -95,13 +98,13 @@ For example to override the default temperature for a specific request:
 ChatResponse response = chatModel.call(
     new Prompt(
         "Generate the names of 5 famous pirates.",
-        VertexAiPaLm2ChatOptions.builder()
+        VertexAiGeminiChatOptions.builder()
             .withTemperature(0.4)
         .build()
     ));
 ----
 
-TIP: In addition to the model specific `VertexAiChatPaLm2Options` you can use a portable https://github.com/spring-projects/spring-ai/blob/main/spring-ai-core/src/main/java/org/springframework/ai/chat/prompt/ChatOptions.java[ChatOptions] instance, created with the
+TIP: In addition to the model specific `VertexAiGeminiChatOptions` you can use a portable https://github.com/spring-projects/spring-ai/blob/main/spring-ai-core/src/main/java/org/springframework/ai/chat/prompt/ChatOptions.java[ChatOptions] instance, created with the
 https://github.com/spring-projects/spring-ai/blob/main/spring-ai-core/src/main/java/org/springframework/ai/chat/prompt/ChatOptionsBuilder.java[ChatOptionsBuilder#builder()].
 
 == Function Calling
@@ -138,7 +141,7 @@ ChatResponse response = chatModel.call(new Prompt(List.of(userMessage)));
 
 == Sample Controller
 
-https://start.spring.io/[Create] a new Spring Boot project and add the `spring-ai-vertex-ai-palm2-spring-boot-starter` to your pom (or gradle) dependencies.
+https://start.spring.io/[Create] a new Spring Boot project and add the `spring-ai-vertex-ai-gemini-spring-boot-starter` to your pom (or gradle) dependencies.
 
 Add a `application.properties` file, under the `src/main/resources` directory, to enable and configure the VertexAi chat model:
 

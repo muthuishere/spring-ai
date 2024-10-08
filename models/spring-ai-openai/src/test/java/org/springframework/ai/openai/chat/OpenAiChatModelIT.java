@@ -64,7 +64,7 @@ import reactor.core.publisher.Flux;
 
 @SpringBootTest(classes = OpenAiTestConfiguration.class)
 @EnabledIfEnvironmentVariable(named = "OPENAI_API_KEY", matches = ".+")
-class OpenAiChatModelIT extends AbstractIT {
+public class OpenAiChatModelIT extends AbstractIT {
 
 	private static final Logger logger = LoggerFactory.getLogger(OpenAiChatModelIT.class);
 
@@ -82,6 +82,24 @@ class OpenAiChatModelIT extends AbstractIT {
 		assertThat(response.getResults()).hasSize(1);
 		assertThat(response.getResults().get(0).getOutput().getContent()).contains("Blackbeard");
 		// needs fine tuning... evaluateQuestionAndAnswer(request, response, false);
+	}
+
+	@Test
+	void testMessageHistory() {
+		UserMessage userMessage = new UserMessage(
+				"Tell me about 3 famous pirates from the Golden Age of Piracy and why they did.");
+		SystemPromptTemplate systemPromptTemplate = new SystemPromptTemplate(systemResource);
+		Message systemMessage = systemPromptTemplate.createMessage(Map.of("name", "Bob", "voice", "pirate"));
+		Prompt prompt = new Prompt(List.of(userMessage, systemMessage));
+
+		ChatResponse response = chatModel.call(prompt);
+		assertThat(response.getResult().getOutput().getContent()).containsAnyOf("Blackbeard", "Bartholomew");
+
+		var promptWithMessageHistory = new Prompt(List.of(new UserMessage("Dummy"), response.getResult().getOutput(),
+				new UserMessage("Repeat the last assistant message.")));
+		response = chatModel.call(promptWithMessageHistory);
+
+		assertThat(response.getResult().getOutput().getContent()).containsAnyOf("Blackbeard", "Bartholomew");
 	}
 
 	@Test

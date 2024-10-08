@@ -16,7 +16,6 @@
 
 package org.springframework.ai.vectorstore;
 
-import java.util.Arrays;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -27,8 +26,16 @@ import java.util.stream.Stream;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.ai.document.Document;
+import org.springframework.ai.embedding.BatchingStrategy;
 import org.springframework.ai.embedding.EmbeddingModel;
+import org.springframework.ai.embedding.EmbeddingOptionsBuilder;
+import org.springframework.ai.embedding.TokenCountBatchingStrategy;
+import org.springframework.ai.observation.conventions.VectorStoreProvider;
+import org.springframework.ai.observation.conventions.VectorStoreSimilarityMetric;
 import org.springframework.ai.vectorstore.filter.FilterExpressionConverter;
+import org.springframework.ai.vectorstore.observation.AbstractObservationVectorStore;
+import org.springframework.ai.vectorstore.observation.VectorStoreObservationContext;
+import org.springframework.ai.vectorstore.observation.VectorStoreObservationConvention;
 import org.springframework.beans.factory.InitializingBean;
 import org.springframework.util.Assert;
 import org.typesense.api.Client;
@@ -42,11 +49,14 @@ import org.typesense.model.MultiSearchCollectionParameters;
 import org.typesense.model.MultiSearchResult;
 import org.typesense.model.MultiSearchSearchesParameter;
 
+import io.micrometer.observation.ObservationRegistry;
+
 /**
  * @author Pablo Sanchidrian Herrera
  * @author Soby Chacko
+ * @author Christian Tzolov
  */
-public class TypesenseVectorStore implements VectorStore, InitializingBean {
+public class TypesenseVectorStore extends AbstractObservationVectorStore implements InitializingBean {
 
 	private static final Logger logger = LoggerFactory.getLogger(TypesenseVectorStore.class);
 
@@ -77,6 +87,8 @@ public class TypesenseVectorStore implements VectorStore, InitializingBean {
 	public final FilterExpressionConverter filterExpressionConverter = new TypesenseFilterExpressionConverter();
 
 	private final boolean initializeSchema;
+
+	private final BatchingStrategy batchingStrategy;
 
 	public static class TypesenseVectorStoreConfig {
 
@@ -154,6 +166,17 @@ public class TypesenseVectorStore implements VectorStore, InitializingBean {
 
 	public TypesenseVectorStore(Client client, EmbeddingModel embeddingModel, TypesenseVectorStoreConfig config,
 			boolean initializeSchema) {
+
+		this(client, embeddingModel, config, initializeSchema, ObservationRegistry.NOOP, null,
+				new TokenCountBatchingStrategy());
+	}
+
+	public TypesenseVectorStore(Client client, EmbeddingModel embeddingModel, TypesenseVectorStoreConfig config,
+			boolean initializeSchema, ObservationRegistry observationRegistry,
+			VectorStoreObservationConvention customObservationConvention, BatchingStrategy batchingStrategy) {
+
+		super(observationRegistry, customObservationConvention);
+
 		Assert.notNull(client, "Typesense must not be null");
 		Assert.notNull(embeddingModel, "EmbeddingModel must not be null");
 
@@ -161,19 +184,21 @@ public class TypesenseVectorStore implements VectorStore, InitializingBean {
 		this.embeddingModel = embeddingModel;
 		this.config = config;
 		this.initializeSchema = initializeSchema;
+		this.batchingStrategy = batchingStrategy;
 	}
 
 	@Override
-	public void add(List<Document> documents) {
+	public void doAdd(List<Document> documents) {
 		Assert.notNull(documents, "Documents must not be null");
+
+		this.embeddingModel.embed(documents, EmbeddingOptionsBuilder.builder().build(), this.batchingStrategy);
 
 		List<HashMap<String, Object>> documentList = documents.stream().map(document -> {
 			HashMap<String, Object> typesenseDoc = new HashMap<>();
 			typesenseDoc.put(DOC_ID_FIELD_NAME, document.getId());
 			typesenseDoc.put(CONTENT_FIELD_NAME, document.getContent());
 			typesenseDoc.put(METADATA_FIELD_NAME, document.getMetadata());
-			float[] embedding = this.embeddingModel.embed(document.getContent());
-			typesenseDoc.put(EMBEDDING_FIELD_NAME, embedding);
+			typesenseDoc.put(EMBEDDING_FIELD_NAME, document.getEmbedding());
 
 			return typesenseDoc;
 		}).toList();
@@ -194,7 +219,7 @@ public class TypesenseVectorStore implements VectorStore, InitializingBean {
 	}
 
 	@Override
-	public Optional<Boolean> delete(List<String> idList) {
+	public Optional<Boolean> doDelete(List<String> idList) {
 		DeleteDocumentsParameters deleteDocumentsParameters = new DeleteDocumentsParameters();
 		deleteDocumentsParameters.filterBy(DOC_ID_FIELD_NAME + ":=[" + String.join(",", idList) + "]");
 
@@ -217,7 +242,7 @@ public class TypesenseVectorStore implements VectorStore, InitializingBean {
 	}
 
 	@Override
-	public List<Document> similaritySearch(SearchRequest request) {
+	public List<Document> doSimilaritySearch(SearchRequest request) {
 		Assert.notNull(request.getQuery(), "Query string must not be null");
 
 		String nativeFilterExpressions = (request.getFilterExpression() != null)
@@ -359,6 +384,16 @@ public class TypesenseVectorStore implements VectorStore, InitializingBean {
 			return null;
 		}
 
+	}
+
+	@Override
+	public VectorStoreObservationContext.Builder createObservationContextBuilder(String operationName) {
+
+		return VectorStoreObservationContext.builder(VectorStoreProvider.TYPESENSE.value(), operationName)
+			.withDimensions(this.embeddingModel.dimensions())
+			.withCollectionName(this.config.collectionName)
+			.withFieldName(EMBEDDING_FIELD_NAME)
+			.withSimilarityMetric(VectorStoreSimilarityMetric.COSINE.value());
 	}
 
 }

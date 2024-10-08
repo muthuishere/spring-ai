@@ -1,5 +1,5 @@
 /*
- * Copyright 2024 - 2024 the original author or authors.
+ * Copyright 2024 the original author or authors.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -13,6 +13,7 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
+
 package org.springframework.ai.vectorstore;
 
 import com.datastax.oss.driver.api.core.cql.BoundStatement;
@@ -29,14 +30,25 @@ import com.datastax.oss.driver.api.querybuilder.insert.InsertInto;
 import com.datastax.oss.driver.api.querybuilder.insert.RegularInsert;
 import com.datastax.oss.driver.shaded.guava.common.base.Preconditions;
 
+import io.micrometer.observation.ObservationRegistry;
+
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import org.springframework.ai.document.Document;
+import org.springframework.ai.embedding.BatchingStrategy;
 import org.springframework.ai.embedding.EmbeddingModel;
+import org.springframework.ai.embedding.EmbeddingOptionsBuilder;
+import org.springframework.ai.embedding.TokenCountBatchingStrategy;
 import org.springframework.ai.model.EmbeddingUtils;
+import org.springframework.ai.observation.conventions.VectorStoreProvider;
+import org.springframework.ai.observation.conventions.VectorStoreSimilarityMetric;
 import org.springframework.ai.vectorstore.CassandraVectorStoreConfig.SchemaColumn;
 import org.springframework.ai.vectorstore.filter.FilterExpressionConverter;
+import org.springframework.ai.vectorstore.observation.AbstractObservationVectorStore;
+import org.springframework.ai.vectorstore.observation.VectorStoreObservationContext;
+import org.springframework.ai.vectorstore.observation.VectorStoreObservationContext.Builder;
+import org.springframework.ai.vectorstore.observation.VectorStoreObservationConvention;
 
 import java.util.ArrayList;
 import java.util.HashMap;
@@ -86,12 +98,15 @@ import java.util.concurrent.ConcurrentMap;
  * also serve as a protecting throttle against your embedding model.
  *
  * @author Mick Semb Wever
+ * @author Christian Tzolov
+ * @author Thomas Vitale
+ * @author Soby Chacko
  * @see VectorStore
  * @see org.springframework.ai.vectorstore.CassandraVectorStoreConfig
  * @see EmbeddingModel
  * @since 1.0.0
  */
-public class CassandraVectorStore implements VectorStore, AutoCloseable {
+public class CassandraVectorStore extends AbstractObservationVectorStore implements AutoCloseable {
 
 	/**
 	 * Indexes are automatically created with COSINE. This can be changed manually via
@@ -127,11 +142,17 @@ public class CassandraVectorStore implements VectorStore, AutoCloseable {
 
 	private final Similarity similarity;
 
-	public static CassandraVectorStore create(CassandraVectorStoreConfig conf, EmbeddingModel embeddingModel) {
-		return new CassandraVectorStore(conf, embeddingModel);
-	}
+	private final BatchingStrategy batchingStrategy;
 
 	public CassandraVectorStore(CassandraVectorStoreConfig conf, EmbeddingModel embeddingModel) {
+		this(conf, embeddingModel, ObservationRegistry.NOOP, null, new TokenCountBatchingStrategy());
+	}
+
+	public CassandraVectorStore(CassandraVectorStoreConfig conf, EmbeddingModel embeddingModel,
+			ObservationRegistry observationRegistry, VectorStoreObservationConvention customObservationConvention,
+			BatchingStrategy batchingStrategy) {
+
+		super(observationRegistry, customObservationConvention);
 
 		Preconditions.checkArgument(null != conf, "Config must not be null");
 		Preconditions.checkArgument(null != embeddingModel, "Embedding model must not be null");
@@ -153,20 +174,19 @@ public class CassandraVectorStore implements VectorStore, AutoCloseable {
 
 		this.filterExpressionConverter = new CassandraFilterExpressionConverter(
 				cassandraMetadata.getColumns().values());
+		this.batchingStrategy = batchingStrategy;
 	}
 
 	@Override
-	public void add(List<Document> documents) {
+	public void doAdd(List<Document> documents) {
 		var futures = new CompletableFuture[documents.size()];
+
+		this.embeddingModel.embed(documents, EmbeddingOptionsBuilder.builder().build(), this.batchingStrategy);
 
 		int i = 0;
 		for (Document d : documents) {
 			futures[i++] = CompletableFuture.runAsync(() -> {
 				List<Object> primaryKeyValues = this.conf.documentIdTranslator.apply(d.getId());
-
-				if (null == d.getEmbedding() || d.getEmbedding().length == 0) {
-					d.setEmbedding(this.embeddingModel.embed(d));
-				}
 
 				BoundStatementBuilder builder = prepareAddStatement(d.getMetadata().keySet()).boundStatementBuilder();
 				for (int k = 0; k < primaryKeyValues.size(); ++k) {
@@ -194,7 +214,7 @@ public class CassandraVectorStore implements VectorStore, AutoCloseable {
 	}
 
 	@Override
-	public Optional<Boolean> delete(List<String> idList) {
+	public Optional<Boolean> doDelete(List<String> idList) {
 		CompletableFuture[] futures = new CompletableFuture[idList.size()];
 		int i = 0;
 		for (String id : idList) {
@@ -207,7 +227,7 @@ public class CassandraVectorStore implements VectorStore, AutoCloseable {
 	}
 
 	@Override
-	public List<Document> similaritySearch(SearchRequest request) {
+	public List<Document> doSimilaritySearch(SearchRequest request) {
 		Preconditions.checkArgument(request.getTopK() <= 1000);
 		var embedding = toFloatArray(this.embeddingModel.embed(request.getQuery()));
 		CqlVector<Float> cqlVector = CqlVector.newInstance(embedding);
@@ -364,6 +384,26 @@ public class CassandraVectorStore implements VectorStore, AutoCloseable {
 			embeddingFloat[i++] = d.floatValue();
 		}
 		return embeddingFloat;
+	}
+
+	@Override
+	public Builder createObservationContextBuilder(String operationName) {
+		return VectorStoreObservationContext.builder(VectorStoreProvider.CASSANDRA.value(), operationName)
+			.withCollectionName(this.conf.schema.table())
+			.withDimensions(this.embeddingModel.dimensions())
+			.withNamespace(this.conf.schema.keyspace())
+			.withSimilarityMetric(getSimilarityMetric());
+	}
+
+	private static Map<Similarity, VectorStoreSimilarityMetric> SIMILARITY_TYPE_MAPPING = Map.of(Similarity.COSINE,
+			VectorStoreSimilarityMetric.COSINE, Similarity.EUCLIDEAN, VectorStoreSimilarityMetric.EUCLIDEAN,
+			Similarity.DOT_PRODUCT, VectorStoreSimilarityMetric.DOT);
+
+	private String getSimilarityMetric() {
+		if (!SIMILARITY_TYPE_MAPPING.containsKey(this.similarity)) {
+			return this.similarity.name();
+		}
+		return SIMILARITY_TYPE_MAPPING.get(this.similarity).value();
 	}
 
 }

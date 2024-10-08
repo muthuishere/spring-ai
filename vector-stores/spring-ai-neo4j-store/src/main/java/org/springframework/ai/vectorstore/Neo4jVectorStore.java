@@ -1,5 +1,5 @@
 /*
- * Copyright 2023 - 2024 the original author or authors.
+ * Copyright 2023-2024 the original author or authors.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -13,6 +13,7 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
+
 package org.springframework.ai.vectorstore;
 
 import java.util.HashMap;
@@ -26,16 +27,29 @@ import org.neo4j.driver.Driver;
 import org.neo4j.driver.SessionConfig;
 import org.neo4j.driver.Values;
 import org.springframework.ai.document.Document;
+import org.springframework.ai.embedding.BatchingStrategy;
 import org.springframework.ai.embedding.EmbeddingModel;
+import org.springframework.ai.embedding.EmbeddingOptionsBuilder;
+import org.springframework.ai.embedding.TokenCountBatchingStrategy;
+import org.springframework.ai.observation.conventions.VectorStoreProvider;
+import org.springframework.ai.observation.conventions.VectorStoreSimilarityMetric;
 import org.springframework.ai.vectorstore.filter.Neo4jVectorFilterExpressionConverter;
+import org.springframework.ai.vectorstore.observation.AbstractObservationVectorStore;
+import org.springframework.ai.vectorstore.observation.VectorStoreObservationContext;
+import org.springframework.ai.vectorstore.observation.VectorStoreObservationConvention;
 import org.springframework.beans.factory.InitializingBean;
 import org.springframework.util.Assert;
+
+import io.micrometer.observation.ObservationRegistry;
 
 /**
  * @author Gerrit Meier
  * @author Michael Simons
+ * @author Christian Tzolov
+ * @author Thomas Vitale
+ * @author Soby Chacko
  */
-public class Neo4jVectorStore implements VectorStore, InitializingBean {
+public class Neo4jVectorStore extends AbstractObservationVectorStore implements InitializingBean {
 
 	/**
 	 * An enum to configure the distance function used in the Neo4j vector index.
@@ -275,21 +289,32 @@ public class Neo4jVectorStore implements VectorStore, InitializingBean {
 
 	private final boolean initializeSchema;
 
+	private final BatchingStrategy batchingStrategy;
+
 	public Neo4jVectorStore(Driver driver, EmbeddingModel embeddingModel, Neo4jVectorStoreConfig config,
 			boolean initializeSchema) {
-		this.initializeSchema = initializeSchema;
+		this(driver, embeddingModel, config, initializeSchema, ObservationRegistry.NOOP, null,
+				new TokenCountBatchingStrategy());
+	}
 
+	public Neo4jVectorStore(Driver driver, EmbeddingModel embeddingModel, Neo4jVectorStoreConfig config,
+			boolean initializeSchema, ObservationRegistry observationRegistry,
+			VectorStoreObservationConvention customObservationConvention, BatchingStrategy batchingStrategy) {
+		super(observationRegistry, customObservationConvention);
+
+		this.initializeSchema = initializeSchema;
 		Assert.notNull(driver, "Neo4j driver must not be null");
 		Assert.notNull(embeddingModel, "Embedding model must not be null");
-
 		this.driver = driver;
 		this.embeddingModel = embeddingModel;
-
 		this.config = config;
+		this.batchingStrategy = batchingStrategy;
 	}
 
 	@Override
-	public void add(List<Document> documents) {
+	public void doAdd(List<Document> documents) {
+
+		this.embeddingModel.embed(documents, EmbeddingOptionsBuilder.builder().build(), this.batchingStrategy);
 
 		var rows = documents.stream().map(this::documentToRecord).toList();
 
@@ -311,7 +336,7 @@ public class Neo4jVectorStore implements VectorStore, InitializingBean {
 	}
 
 	@Override
-	public Optional<Boolean> delete(List<String> idList) {
+	public Optional<Boolean> doDelete(List<String> idList) {
 
 		try (var session = this.driver.session(this.config.sessionConfig)) {
 
@@ -327,7 +352,7 @@ public class Neo4jVectorStore implements VectorStore, InitializingBean {
 	}
 
 	@Override
-	public List<Document> similaritySearch(SearchRequest request) {
+	public List<Document> doSimilaritySearch(SearchRequest request) {
 		Assert.isTrue(request.getTopK() > 0, "The number of documents to returned must be greater than zero");
 		Assert.isTrue(request.getSimilarityThreshold() >= 0 && request.getSimilarityThreshold() <= 1,
 				"The similarity score is bounded between 0 and 1; least to most similar respectively.");
@@ -380,8 +405,7 @@ public class Neo4jVectorStore implements VectorStore, InitializingBean {
 	}
 
 	private Map<String, Object> documentToRecord(Document document) {
-		var embedding = this.embeddingModel.embed(document);
-		document.setEmbedding(embedding);
+		document.setEmbedding(document.getEmbedding());
 
 		var row = new HashMap<String, Object>();
 
@@ -393,7 +417,7 @@ public class Neo4jVectorStore implements VectorStore, InitializingBean {
 		document.getMetadata().forEach((k, v) -> properties.put("metadata." + k, Values.value(v)));
 		row.put("properties", properties);
 
-		row.put(this.config.embeddingProperty, Values.value(embedding));
+		row.put(this.config.embeddingProperty, Values.value(document.getEmbedding()));
 		return row;
 	}
 
@@ -410,6 +434,26 @@ public class Neo4jVectorStore implements VectorStore, InitializingBean {
 
 		return new Document(node.get(this.config.idProperty).asString(), node.get("text").asString(),
 				Map.copyOf(metaData));
+	}
+
+	@Override
+	public VectorStoreObservationContext.Builder createObservationContextBuilder(String operationName) {
+
+		return VectorStoreObservationContext.builder(VectorStoreProvider.NEO4J.value(), operationName)
+			.withCollectionName(this.config.indexName)
+			.withDimensions(this.embeddingModel.dimensions())
+			.withSimilarityMetric(getSimilarityMetric());
+	}
+
+	private static Map<Neo4jDistanceType, VectorStoreSimilarityMetric> SIMILARITY_TYPE_MAPPING = Map.of(
+			Neo4jDistanceType.COSINE, VectorStoreSimilarityMetric.COSINE, Neo4jDistanceType.EUCLIDEAN,
+			VectorStoreSimilarityMetric.EUCLIDEAN);
+
+	private String getSimilarityMetric() {
+		if (!SIMILARITY_TYPE_MAPPING.containsKey(this.config.distanceType)) {
+			return this.config.distanceType.name();
+		}
+		return SIMILARITY_TYPE_MAPPING.get(this.config.distanceType).value();
 	}
 
 }

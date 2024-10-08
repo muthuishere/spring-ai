@@ -56,7 +56,6 @@ Here are the advanced request parameter for the Ollama embedding model:
 [cols="3,6,1"]
 |====
 | Property | Description | Default
-
 | spring.ai.ollama.embedding.enabled      | Enables the Ollama embedding model auto-configuration. | true
 | spring.ai.ollama.embedding.options.model  | The name of the https://github.com/ollama/ollama?tab=readme-ov-file#model-library[supported model] to use. 
 You can use dedicated https://ollama.com/search?c=embedding[Embedding Model] types | mistral
@@ -185,14 +184,13 @@ var ollamaApi = new OllamaApi();
 var embeddingModel = new OllamaEmbeddingModel(ollamaApi,
         OllamaOptions.builder()
 			.withModel(OllamaModel.MISTRAL.id())
-            .build()
-            .toMap());
+            .build());
 
 EmbeddingResponse embeddingResponse = embeddingModel.call(
     new EmbeddingRequest(List.of("Hello World", "World is big and salvation is near"),
         OllamaOptions.builder()
             .withModel("chroma/all-minilm-l6-v2-f32"))
-            .withtTruncate(false)
+            .withTruncate(false)
             .build());
 ----
 

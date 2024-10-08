@@ -18,6 +18,8 @@ package org.springframework.ai.vertexai.gemini;
 import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.List;
+import java.util.Map;
+import java.util.Objects;
 import java.util.Set;
 
 import com.fasterxml.jackson.annotation.JsonIgnore;
@@ -35,7 +37,8 @@ import org.springframework.util.Assert;
 /**
  * @author Christian Tzolov
  * @author Thomas Vitale
- * @since 0.8.1
+ * @author Grogdunn
+ * @since 1.0.0
  */
 @JsonInclude(Include.NON_NULL)
 public class VertexAiGeminiChatOptions implements FunctionCallingOptions, ChatOptions {
@@ -56,11 +59,11 @@ public class VertexAiGeminiChatOptions implements FunctionCallingOptions, ChatOp
 	/**
 	 * Optional. Controls the randomness of predictions.
 	 */
-	private @JsonProperty("temperature") Float temperature;
+	private @JsonProperty("temperature") Double temperature;
 	/**
 	 * Optional. If specified, nucleus sampling will be used.
 	 */
-	private @JsonProperty("topP") Float topP;
+	private @JsonProperty("topP") Double topP;
 	/**
 	 * Optional. If specified, top k sampling will be used.
 	 */
@@ -77,6 +80,12 @@ public class VertexAiGeminiChatOptions implements FunctionCallingOptions, ChatOp
 	 * Gemini model name.
 	 */
 	private @JsonProperty("modelName") String model;
+	/**
+	 * Optional. Output response mimetype of the generated candidate text.
+	 * - text/plain: (default) Text output.
+	 * - application/json: JSON response in the candidates.
+	 */
+	private @JsonProperty("responseMimeType") String responseMimeType;
 
 	/**
 	 * Tool Function Callbacks to register with the ChatModel.
@@ -101,6 +110,19 @@ public class VertexAiGeminiChatOptions implements FunctionCallingOptions, ChatOp
 	@JsonIgnore
 	private Set<String> functions = new HashSet<>();
 
+	/**
+	 * Use Google search Grounding feature
+	 */
+	@JsonIgnore
+	private boolean googleSearchRetrieval = false;
+
+	@JsonIgnore
+	private Boolean proxyToolCalls;
+
+	@NestedConfigurationProperty
+	@JsonIgnore
+	private Map<String, Object> toolContext;
+
 	// @formatter:on
 
 	public static Builder builder() {
@@ -116,12 +138,12 @@ public class VertexAiGeminiChatOptions implements FunctionCallingOptions, ChatOp
 			return this;
 		}
 
-		public Builder withTemperature(Float temperature) {
+		public Builder withTemperature(Double temperature) {
 			this.options.setTemperature(temperature);
 			return this;
 		}
 
-		public Builder withTopP(Float topP) {
+		public Builder withTopP(Double topP) {
 			this.options.setTopP(topP);
 			return this;
 		}
@@ -151,6 +173,12 @@ public class VertexAiGeminiChatOptions implements FunctionCallingOptions, ChatOp
 			return this;
 		}
 
+		public Builder withResponseMimeType(String mimeType) {
+			Assert.notNull(mimeType, "mimeType must not be null");
+			this.options.setResponseMimeType(mimeType);
+			return this;
+		}
+
 		public Builder withFunctionCallbacks(List<FunctionCallback> functionCallbacks) {
 			this.options.functionCallbacks = functionCallbacks;
 			return this;
@@ -165,6 +193,26 @@ public class VertexAiGeminiChatOptions implements FunctionCallingOptions, ChatOp
 		public Builder withFunction(String functionName) {
 			Assert.hasText(functionName, "Function name must not be empty");
 			this.options.functions.add(functionName);
+			return this;
+		}
+
+		public Builder withGoogleSearchRetrieval(boolean googleSearch) {
+			this.options.googleSearchRetrieval = googleSearch;
+			return this;
+		}
+
+		public Builder withProxyToolCalls(boolean proxyToolCalls) {
+			this.options.proxyToolCalls = proxyToolCalls;
+			return this;
+		}
+
+		public Builder withToolContext(Map<String, Object> toolContext) {
+			if (this.options.toolContext == null) {
+				this.options.toolContext = toolContext;
+			}
+			else {
+				this.options.toolContext.putAll(toolContext);
+			}
 			return this;
 		}
 
@@ -184,20 +232,20 @@ public class VertexAiGeminiChatOptions implements FunctionCallingOptions, ChatOp
 	}
 
 	@Override
-	public Float getTemperature() {
+	public Double getTemperature() {
 		return this.temperature;
 	}
 
-	public void setTemperature(Float temperature) {
+	public void setTemperature(Double temperature) {
 		this.temperature = temperature;
 	}
 
 	@Override
-	public Float getTopP() {
+	public Double getTopP() {
 		return this.topP;
 	}
 
-	public void setTopP(Float topP) {
+	public void setTopP(Double topP) {
 		this.topP = topP;
 	}
 
@@ -251,6 +299,14 @@ public class VertexAiGeminiChatOptions implements FunctionCallingOptions, ChatOp
 		this.model = modelName;
 	}
 
+	public String getResponseMimeType() {
+		return this.responseMimeType;
+	}
+
+	public String setResponseMimeType(String mimeType) {
+		return this.responseMimeType = mimeType;
+	}
+
 	public List<FunctionCallback> getFunctionCallbacks() {
 		return this.functionCallbacks;
 	}
@@ -269,109 +325,72 @@ public class VertexAiGeminiChatOptions implements FunctionCallingOptions, ChatOp
 
 	@Override
 	@JsonIgnore
-	public Float getFrequencyPenalty() {
+	public Double getFrequencyPenalty() {
 		return null;
 	}
 
 	@Override
 	@JsonIgnore
-	public Float getPresencePenalty() {
+	public Double getPresencePenalty() {
 		return null;
+	}
+
+	public boolean getGoogleSearchRetrieval() {
+		return this.googleSearchRetrieval;
+	}
+
+	public void setGoogleSearchRetrieval(boolean googleSearchRetrieval) {
+		this.googleSearchRetrieval = googleSearchRetrieval;
+	}
+
+	@Override
+	public Boolean getProxyToolCalls() {
+		return this.proxyToolCalls;
+	}
+
+	public void setProxyToolCalls(Boolean proxyToolCalls) {
+		this.proxyToolCalls = proxyToolCalls;
+	}
+
+	@Override
+	public Map<String, Object> getToolContext() {
+		return this.toolContext;
+	}
+
+	@Override
+	public void setToolContext(Map<String, Object> toolContext) {
+		this.toolContext = toolContext;
+	}
+
+	@Override
+	public boolean equals(Object o) {
+		if (this == o)
+			return true;
+		if (!(o instanceof VertexAiGeminiChatOptions that))
+			return false;
+		return googleSearchRetrieval == that.googleSearchRetrieval && Objects.equals(stopSequences, that.stopSequences)
+				&& Objects.equals(temperature, that.temperature) && Objects.equals(topP, that.topP)
+				&& Objects.equals(topK, that.topK) && Objects.equals(candidateCount, that.candidateCount)
+				&& Objects.equals(maxOutputTokens, that.maxOutputTokens) && Objects.equals(model, that.model)
+				&& Objects.equals(responseMimeType, that.responseMimeType)
+				&& Objects.equals(functionCallbacks, that.functionCallbacks)
+				&& Objects.equals(functions, that.functions) && Objects.equals(proxyToolCalls, that.proxyToolCalls)
+				&& Objects.equals(toolContext, that.toolContext);
 	}
 
 	@Override
 	public int hashCode() {
-		final int prime = 31;
-		int result = 1;
-		result = prime * result + ((stopSequences == null) ? 0 : stopSequences.hashCode());
-		result = prime * result + ((temperature == null) ? 0 : temperature.hashCode());
-		result = prime * result + ((topP == null) ? 0 : topP.hashCode());
-		result = prime * result + ((topK == null) ? 0 : topK.hashCode());
-		result = prime * result + ((candidateCount == null) ? 0 : candidateCount.hashCode());
-		result = prime * result + ((maxOutputTokens == null) ? 0 : maxOutputTokens.hashCode());
-		result = prime * result + ((model == null) ? 0 : model.hashCode());
-		result = prime * result + ((functionCallbacks == null) ? 0 : functionCallbacks.hashCode());
-		result = prime * result + ((functions == null) ? 0 : functions.hashCode());
-		return result;
-	}
-
-	@Override
-	public boolean equals(Object obj) {
-		if (this == obj)
-			return true;
-		if (obj == null)
-			return false;
-		if (getClass() != obj.getClass())
-			return false;
-		VertexAiGeminiChatOptions other = (VertexAiGeminiChatOptions) obj;
-		if (stopSequences == null) {
-			if (other.stopSequences != null)
-				return false;
-		}
-		else if (!stopSequences.equals(other.stopSequences))
-			return false;
-		if (temperature == null) {
-			if (other.temperature != null)
-				return false;
-		}
-		else if (!temperature.equals(other.temperature))
-			return false;
-		if (topP == null) {
-			if (other.topP != null)
-				return false;
-		}
-		else if (!topP.equals(other.topP))
-			return false;
-		if (topK == null) {
-			if (other.topK != null)
-				return false;
-		}
-		else if (!topK.equals(other.topK))
-			return false;
-		if (candidateCount == null) {
-			if (other.candidateCount != null)
-				return false;
-		}
-		else if (!candidateCount.equals(other.candidateCount))
-			return false;
-		if (maxOutputTokens == null) {
-			if (other.maxOutputTokens != null)
-				return false;
-		}
-		else if (!maxOutputTokens.equals(other.maxOutputTokens))
-			return false;
-		if (model == null) {
-			if (other.model != null)
-				return false;
-		}
-		else if (!model.equals(other.model))
-			return false;
-		if (functionCallbacks == null) {
-			if (other.functionCallbacks != null)
-				return false;
-		}
-		else if (!functionCallbacks.equals(other.functionCallbacks))
-			return false;
-		if (functions == null) {
-			if (other.functions != null)
-				return false;
-		}
-		else if (!functions.equals(other.functions))
-			return false;
-		return true;
+		return Objects.hash(stopSequences, temperature, topP, topK, candidateCount, maxOutputTokens, model,
+				responseMimeType, functionCallbacks, functions, googleSearchRetrieval, proxyToolCalls, toolContext);
 	}
 
 	@Override
 	public String toString() {
-		return "VertexAiGeminiChatOptions [stopSequences=" + stopSequences + ", temperature=" + temperature + ", topP="
-				+ topP + ", topK=" + topK + ", candidateCount=" + candidateCount + ", maxOutputTokens="
-				+ maxOutputTokens + ", model=" + model + ", functionCallbacks=" + functionCallbacks + ", functions="
-				+ functions + ", getClass()=" + getClass() + ", getStopSequences()=" + getStopSequences()
-				+ ", getTemperature()=" + getTemperature() + ", getTopP()=" + getTopP() + ", getTopK()=" + getTopK()
-				+ ", getCandidateCount()=" + getCandidateCount() + ", getMaxOutputTokens()=" + getMaxOutputTokens()
-				+ ", getModel()=" + getModel() + ", getFunctionCallbacks()=" + getFunctionCallbacks()
-				+ ", getFunctions()=" + getFunctions() + ", hashCode()=" + hashCode() + ", toString()="
-				+ super.toString() + "]";
+		return "VertexAiGeminiChatOptions{" + "stopSequences=" + stopSequences + ", temperature=" + temperature
+				+ ", topP=" + topP + ", topK=" + topK + ", candidateCount=" + candidateCount + ", maxOutputTokens="
+				+ maxOutputTokens + ", model='" + model + '\'' + ", responseMimeType='" + responseMimeType + '\''
+				+ ", functionCallbacks=" + functionCallbacks + ", functions=" + functions + ", googleSearchRetrieval="
+				+ googleSearchRetrieval + '}';
 	}
 
 	@Override
@@ -389,7 +408,12 @@ public class VertexAiGeminiChatOptions implements FunctionCallingOptions, ChatOp
 		options.setMaxOutputTokens(fromOptions.getMaxOutputTokens());
 		options.setModel(fromOptions.getModel());
 		options.setFunctionCallbacks(fromOptions.getFunctionCallbacks());
+		options.setResponseMimeType(fromOptions.getResponseMimeType());
 		options.setFunctions(fromOptions.getFunctions());
+		options.setResponseMimeType(fromOptions.getResponseMimeType());
+		options.setGoogleSearchRetrieval(fromOptions.getGoogleSearchRetrieval());
+		options.setProxyToolCalls(fromOptions.getProxyToolCalls());
+		options.setToolContext(fromOptions.getToolContext());
 		return options;
 	}
 

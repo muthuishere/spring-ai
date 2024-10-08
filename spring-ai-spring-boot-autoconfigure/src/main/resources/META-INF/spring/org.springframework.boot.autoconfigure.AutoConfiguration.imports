@@ -1,5 +1,6 @@
 org.springframework.ai.autoconfigure.openai.OpenAiAutoConfiguration
 org.springframework.ai.autoconfigure.azure.openai.AzureOpenAiAutoConfiguration
+org.springframework.ai.autoconfigure.oci.genai.OCIGenAiAutoConfiguration
 org.springframework.ai.autoconfigure.stabilityai.StabilityAiImageAutoConfiguration
 org.springframework.ai.autoconfigure.transformers.TransformersEmbeddingModelAutoConfiguration
 org.springframework.ai.autoconfigure.huggingface.HuggingfaceChatAutoConfiguration
@@ -46,3 +47,4 @@ org.springframework.ai.autoconfigure.qianfan.QianFanAutoConfiguration
 org.springframework.ai.autoconfigure.minimax.MiniMaxAutoConfiguration
 org.springframework.ai.autoconfigure.vertexai.embedding.VertexAiEmbeddingAutoConfiguration
 org.springframework.ai.autoconfigure.chat.memory.cassandra.CassandraChatMemoryAutoConfiguration
+org.springframework.ai.autoconfigure.vectorstore.observation.VectorStoreObservationAutoConfiguration

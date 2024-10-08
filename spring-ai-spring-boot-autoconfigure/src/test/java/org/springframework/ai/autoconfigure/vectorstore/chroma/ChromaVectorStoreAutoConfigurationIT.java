@@ -23,22 +23,32 @@ import org.testcontainers.chromadb.ChromaDBContainer;
 import org.testcontainers.junit.jupiter.Container;
 import org.testcontainers.junit.jupiter.Testcontainers;
 
+import io.micrometer.observation.tck.TestObservationRegistry;
+import io.micrometer.observation.tck.TestObservationRegistryAssert;
+
 import org.springframework.ai.document.Document;
 import org.springframework.ai.embedding.EmbeddingModel;
+import org.springframework.ai.observation.conventions.VectorStoreProvider;
 import org.springframework.ai.transformers.TransformersEmbeddingModel;
 import org.springframework.ai.vectorstore.SearchRequest;
 import org.springframework.ai.vectorstore.VectorStore;
+import org.springframework.ai.vectorstore.observation.DefaultVectorStoreObservationConvention;
+import org.springframework.ai.vectorstore.observation.VectorStoreObservationContext;
+import org.springframework.ai.vectorstore.observation.VectorStoreObservationDocumentation.HighCardinalityKeyNames;
 import org.springframework.boot.autoconfigure.AutoConfigurations;
 import org.springframework.boot.test.context.runner.ApplicationContextRunner;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.junit.Assert.assertThrows;
+import static org.springframework.ai.autoconfigure.vectorstore.observation.ObservationTestUtil.assertObservationRegistry;
 
 /**
  * @author Christian Tzolov
  * @author Eddú Meléndez
  * @author Soby Chacko
+ * @author Thomas Vitale
  */
 @Testcontainers
 public class ChromaVectorStoreAutoConfigurationIT {
@@ -51,15 +61,15 @@ public class ChromaVectorStoreAutoConfigurationIT {
 		.withUserConfiguration(Config.class)
 		.withPropertyValues("spring.ai.vectorstore.chroma.client.host=http://" + chroma.getHost(),
 				"spring.ai.vectorstore.chroma.client.port=" + chroma.getMappedPort(8000),
-				"spring.ai.vectorstore.chroma.initializeSchema=true",
 				"spring.ai.vectorstore.chroma.collectionName=TestCollection");
 
 	@Test
 	public void addAndSearchWithFilters() {
 
-		contextRunner.run(context -> {
+		contextRunner.withPropertyValues("spring.ai.vectorstore.chroma.initializeSchema=true").run(context -> {
 
 			VectorStore vectorStore = context.getBean(VectorStore.class);
+			TestObservationRegistry observationRegistry = context.getBean(TestObservationRegistry.class);
 
 			var bgDocument = new Document("The World is Big and Salvation Lurks Around the Corner",
 					Map.of("country", "Bulgaria"));
@@ -68,28 +78,70 @@ public class ChromaVectorStoreAutoConfigurationIT {
 
 			vectorStore.add(List.of(bgDocument, nlDocument));
 
+			assertObservationRegistry(observationRegistry, VectorStoreProvider.CHROMA,
+					VectorStoreObservationContext.Operation.ADD);
+			observationRegistry.clear();
+
 			var request = SearchRequest.query("The World").withTopK(5);
 
 			List<Document> results = vectorStore.similaritySearch(request);
 			assertThat(results).hasSize(2);
+			observationRegistry.clear();
 
 			results = vectorStore
 				.similaritySearch(request.withSimilarityThresholdAll().withFilterExpression("country == 'Bulgaria'"));
 			assertThat(results).hasSize(1);
 			assertThat(results.get(0).getId()).isEqualTo(bgDocument.getId());
+			observationRegistry.clear();
 
 			results = vectorStore.similaritySearch(
 					request.withSimilarityThresholdAll().withFilterExpression("country == 'Netherlands'"));
 			assertThat(results).hasSize(1);
 			assertThat(results.get(0).getId()).isEqualTo(nlDocument.getId());
 
+			TestObservationRegistryAssert.assertThat(observationRegistry)
+				.doesNotHaveAnyRemainingCurrentObservation()
+				.hasObservationWithNameEqualTo(DefaultVectorStoreObservationConvention.DEFAULT_NAME)
+				.that()
+				.hasContextualNameEqualTo("chroma query")
+				.hasHighCardinalityKeyValue(HighCardinalityKeyNames.DB_VECTOR_QUERY_FILTER.asString(),
+						"Expression[type=EQ, left=Key[key=country], right=Value[value=Netherlands]]")
+				.hasBeenStarted()
+				.hasBeenStopped();
+			observationRegistry.clear();
+
 			// Remove all documents from the store
 			vectorStore.delete(List.of(bgDocument, nlDocument).stream().map(doc -> doc.getId()).toList());
+
+			TestObservationRegistryAssert.assertThat(observationRegistry)
+				.doesNotHaveAnyRemainingCurrentObservation()
+				.hasObservationWithNameEqualTo(DefaultVectorStoreObservationConvention.DEFAULT_NAME)
+				.that()
+				.hasContextualNameEqualTo("chroma delete")
+				.hasBeenStarted()
+				.hasBeenStopped();
+			observationRegistry.clear();
+
+		});
+	}
+
+	@Test
+	public void throwExceptionOnMissingCollectionAndDisabledInitializedSchema() {
+
+		contextRunner.withPropertyValues("spring.ai.vectorstore.chroma.initializeSchema=false").run(context -> {
+			assertThrows(
+					"Collection TestCollection doesn't exist and won't be created as the initializeSchema is set to false.",
+					java.lang.RuntimeException.class, () -> context.getBean(VectorStore.class));
 		});
 	}
 
 	@Configuration(proxyBeanMethods = false)
 	static class Config {
+
+		@Bean
+		public TestObservationRegistry observationRegistry() {
+			return TestObservationRegistry.create();
+		}
 
 		@Bean
 		public EmbeddingModel embeddingModel() {

@@ -1,5 +1,5 @@
 /*
- * Copyright 2023 - 2024 the original author or authors.
+ * Copyright 2023-2024 the original author or authors.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -21,11 +21,28 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 
+import org.springframework.ai.document.Document;
+import org.springframework.ai.embedding.BatchingStrategy;
+import org.springframework.ai.embedding.EmbeddingModel;
+import org.springframework.ai.embedding.EmbeddingOptionsBuilder;
+import org.springframework.ai.embedding.TokenCountBatchingStrategy;
+import org.springframework.ai.model.EmbeddingUtils;
+import org.springframework.ai.observation.conventions.VectorStoreProvider;
+import org.springframework.ai.vectorstore.filter.FilterExpressionConverter;
+import org.springframework.ai.vectorstore.filter.converter.PineconeFilterExpressionConverter;
+import org.springframework.ai.vectorstore.observation.AbstractObservationVectorStore;
+import org.springframework.ai.vectorstore.observation.VectorStoreObservationContext;
+import org.springframework.ai.vectorstore.observation.VectorStoreObservationConvention;
+import org.springframework.util.Assert;
+import org.springframework.util.StringUtils;
+
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.google.protobuf.Struct;
 import com.google.protobuf.Value;
 import com.google.protobuf.util.JsonFormat;
+
+import io.micrometer.observation.ObservationRegistry;
 import io.pinecone.PineconeClient;
 import io.pinecone.PineconeClientConfig;
 import io.pinecone.PineconeConnection;
@@ -36,14 +53,6 @@ import io.pinecone.proto.QueryResponse;
 import io.pinecone.proto.UpsertRequest;
 import io.pinecone.proto.Vector;
 
-import org.springframework.ai.document.Document;
-import org.springframework.ai.embedding.EmbeddingModel;
-import org.springframework.ai.model.EmbeddingUtils;
-import org.springframework.ai.vectorstore.filter.FilterExpressionConverter;
-import org.springframework.ai.vectorstore.filter.converter.PineconeFilterExpressionConverter;
-import org.springframework.util.Assert;
-import org.springframework.util.StringUtils;
-
 /**
  * A VectorStore implementation backed by Pinecone, a cloud-based vector database. This
  * store supports creating, updating, deleting, and similarity searching of documents in a
@@ -51,8 +60,9 @@ import org.springframework.util.StringUtils;
  *
  * @author Christian Tzolov
  * @author Adam Bchouti
+ * @author Soby Chacko
  */
-public class PineconeVectorStore implements VectorStore {
+public class PineconeVectorStore extends AbstractObservationVectorStore {
 
 	public static final String CONTENT_FIELD_NAME = "document_content";
 
@@ -66,11 +76,15 @@ public class PineconeVectorStore implements VectorStore {
 
 	private final String pineconeNamespace;
 
+	private final String pineconeIndexName;
+
 	private final String pineconeContentFieldName;
 
 	private final String pineconeDistanceMetadataFieldName;
 
 	private final ObjectMapper objectMapper;
+
+	private final BatchingStrategy batchingStrategy;
 
 	/**
 	 * Configuration class for the PineconeVectorStore.
@@ -252,15 +266,31 @@ public class PineconeVectorStore implements VectorStore {
 	 * @param embeddingModel The client for embedding operations.
 	 */
 	public PineconeVectorStore(PineconeVectorStoreConfig config, EmbeddingModel embeddingModel) {
+		this(config, embeddingModel, ObservationRegistry.NOOP, null, new TokenCountBatchingStrategy());
+	}
+
+	/**
+	 * Constructs a new PineconeVectorStore.
+	 * @param config The configuration for the store.
+	 * @param embeddingModel The client for embedding operations.
+	 * @param observationRegistry The registry for observations.
+	 * @param customObservationConvention The custom observation convention.
+	 */
+	public PineconeVectorStore(PineconeVectorStoreConfig config, EmbeddingModel embeddingModel,
+			ObservationRegistry observationRegistry, VectorStoreObservationConvention customObservationConvention,
+			BatchingStrategy batchingStrategy) {
+		super(observationRegistry, customObservationConvention);
 		Assert.notNull(config, "PineconeVectorStoreConfig must not be null");
 		Assert.notNull(embeddingModel, "EmbeddingModel must not be null");
 
 		this.embeddingModel = embeddingModel;
 		this.pineconeNamespace = config.namespace;
+		this.pineconeIndexName = config.connectionConfig.getIndexName();
 		this.pineconeContentFieldName = config.contentFieldName;
 		this.pineconeDistanceMetadataFieldName = config.distanceMetadataFieldName;
 		this.pineconeConnection = new PineconeClient(config.clientConfig).connect(config.connectionConfig);
 		this.objectMapper = new ObjectMapper();
+		this.batchingStrategy = batchingStrategy;
 	}
 
 	/**
@@ -269,17 +299,14 @@ public class PineconeVectorStore implements VectorStore {
 	 * @param namespace The namespace to add the documents to
 	 */
 	public void add(List<Document> documents, String namespace) {
-
-		List<Vector> upsertVectors = documents.stream().map(document -> {
-			// Compute and assign an embedding to the document.
-			document.setEmbedding(this.embeddingModel.embed(document));
-
-			return Vector.newBuilder()
+		this.embeddingModel.embed(documents, EmbeddingOptionsBuilder.builder().build(), this.batchingStrategy);
+		List<Vector> upsertVectors = documents.stream()
+			.map(document -> Vector.newBuilder()
 				.setId(document.getId())
 				.addAllValues(EmbeddingUtils.toList(document.getEmbedding()))
 				.setMetadata(metadataToStruct(document))
-				.build();
-		}).toList();
+				.build())
+			.toList();
 
 		UpsertRequest upsertRequest = UpsertRequest.newBuilder()
 			.addAllVectors(upsertVectors)
@@ -294,7 +321,7 @@ public class PineconeVectorStore implements VectorStore {
 	 * @param documents The list of documents to be added.
 	 */
 	@Override
-	public void add(List<Document> documents) {
+	public void doAdd(List<Document> documents) {
 		add(documents, this.pineconeNamespace);
 	}
 
@@ -352,7 +379,7 @@ public class PineconeVectorStore implements VectorStore {
 	 * @return An optional boolean indicating the deletion status.
 	 */
 	@Override
-	public Optional<Boolean> delete(List<String> documentIds) {
+	public Optional<Boolean> doDelete(List<String> documentIds) {
 		return delete(documentIds, this.pineconeNamespace);
 	}
 
@@ -390,7 +417,7 @@ public class PineconeVectorStore implements VectorStore {
 	}
 
 	@Override
-	public List<Document> similaritySearch(SearchRequest request) {
+	public List<Document> doSimilaritySearch(SearchRequest request) {
 		return similaritySearch(request, this.pineconeNamespace);
 	}
 
@@ -422,6 +449,16 @@ public class PineconeVectorStore implements VectorStore {
 		catch (Exception e) {
 			throw new RuntimeException(e);
 		}
+	}
+
+	@Override
+	public VectorStoreObservationContext.Builder createObservationContextBuilder(String operationName) {
+
+		return VectorStoreObservationContext.builder(VectorStoreProvider.PINECONE.value(), operationName)
+			.withCollectionName(this.pineconeIndexName)
+			.withDimensions(this.embeddingModel.dimensions())
+			.withNamespace(this.pineconeNamespace)
+			.withFieldName(this.pineconeContentFieldName);
 	}
 
 }

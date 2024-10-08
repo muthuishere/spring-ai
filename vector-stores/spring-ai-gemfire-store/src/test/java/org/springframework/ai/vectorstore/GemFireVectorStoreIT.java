@@ -1,5 +1,5 @@
 /*
- * Copyright 2023 - 2024 the original author or authors.
+ * Copyright 2023-2024 the original author or authors.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -45,6 +45,8 @@ import org.springframework.core.io.DefaultResourceLoader;
 
 /**
  * @author Geet Rawat
+ * @author Soby Chacko
+ * @author Thomas Vitale
  * @since 1.0.0
  */
 public class GemFireVectorStoreIT {
@@ -69,7 +71,7 @@ public class GemFireVectorStoreIT {
 		Ports.Binding hostPort = Ports.Binding.bindPort(HTTP_SERVICE_PORT);
 		ExposedPort exposedPort = new ExposedPort(HTTP_SERVICE_PORT);
 		PortBinding mappedPort = new PortBinding(hostPort, exposedPort);
-		gemFireCluster = new GemFireCluster("gemfire/gemfire-all:10.1-jdk17", LOCATOR_COUNT, SERVER_COUNT);
+		gemFireCluster = new GemFireCluster(GemFireImage.DEFAULT_IMAGE, LOCATOR_COUNT, SERVER_COUNT);
 		gemFireCluster.withConfiguration(GemFireCluster.SERVER_GLOB,
 				container -> container.withExposedPorts(HTTP_SERVICE_PORT)
 					.withCreateContainerCmdModifier(cmd -> cmd.getHostConfig().withPortBindings(mappedPort)));
@@ -208,15 +210,12 @@ public class GemFireVectorStoreIT {
 	public static class TestApplication {
 
 		@Bean
-		public GemFireVectorStoreConfig gemfireVectorStoreConfig() {
-			return new GemFireVectorStoreConfig().setHost("localhost")
+		public GemFireVectorStore vectorStore(EmbeddingModel embeddingModel) {
+			return new GemFireVectorStore(GemFireVectorStore.GemFireVectorStoreConfig.builder()
+				.setHost("localhost")
 				.setPort(HTTP_SERVICE_PORT)
-				.setIndexName(INDEX_NAME);
-		}
-
-		@Bean
-		public GemFireVectorStore vectorStore(GemFireVectorStoreConfig config, EmbeddingModel embeddingModel) {
-			return new GemFireVectorStore(config, embeddingModel, true);
+				.setIndexName(INDEX_NAME)
+				.build(), embeddingModel, true);
 		}
 
 		@Bean

@@ -3,6 +3,7 @@
 * xref:getting-started.adoc[Getting Started]
 * xref:api/index.adoc[]
 ** xref:api/chatclient.adoc[]
+*** xref:api/advisors.adoc[Advisors]
 ** xref:api/chatmodel.adoc[]
 *** xref:api/bedrock-chat.adoc[Amazon Bedrock]
 **** xref:api/chat/bedrock/bedrock-anthropic3.adoc[Anthropic3]
@@ -27,6 +28,7 @@
 **** xref:api/chat/functions/minimax-chat-functions.adoc[Function Calling]
 *** xref:api/chat/moonshot-chat.adoc[Moonshot AI]
 //// **** xref:api/chat/functions/moonshot-chat-functions.adoc[Function Calling]
+*** xref:api/chat/nvidia-chat.adoc[NVIDIA]
 *** xref:api/chat/ollama-chat.adoc[Ollama]
 **** xref:api/chat/functions/ollama-chat-functions.adoc[Function Calling]
 *** xref:api/chat/openai-chat.adoc[OpenAI]
@@ -34,15 +36,15 @@
 *** xref:api/chat/qianfan-chat.adoc[QianFan]
 *** xref:api/chat/zhipuai-chat.adoc[ZhiPu AI]
 // **** xref:api/chat/functions/zhipuai-chat-functions.adoc[Function Calling]
-*** xref:api/chat/watsonx-ai-chat.adoc[Watsonx.AI]
+*** xref:api/chat/watsonx-ai-chat.adoc[watsonx.AI]
 ** xref:api/embeddings.adoc[]
-*** xref:api/embeddings/azure-openai-embeddings.adoc[Azure OpenAI]
 *** xref:api/bedrock.adoc[Amazon Bedrock]
 **** xref:api/embeddings/bedrock-cohere-embedding.adoc[Cohere]
 **** xref:api/embeddings/bedrock-titan-embedding.adoc[Titan]
 *** xref:api/embeddings/azure-openai-embeddings.adoc[Azure OpenAI]
 *** xref:api/embeddings/mistralai-embeddings.adoc[Mistral AI]
 *** xref:api/embeddings/minimax-embeddings.adoc[MiniMax]
+*** xref:api/embeddings/oci-genai-embeddings.adoc[OCI GenAI]
 *** xref:api/embeddings/ollama-embeddings.adoc[Ollama]
 *** xref:api/embeddings/onnx.adoc[(ONNX) Transformers]
 *** xref:api/embeddings/openai-embeddings.adoc[OpenAI]
@@ -52,6 +54,7 @@
 **** xref:api/embeddings/vertexai-embeddings-text.adoc[Text Embedding]
 **** xref:api/embeddings/vertexai-embeddings-multimodal.adoc[Multimodal Embedding]
 **** xref:api/embeddings/vertexai-embeddings-palm2.adoc[PaLM2 Embedding]
+*** xref:api/embeddings/watsonx-ai-embeddings.adoc[watsonx.AI]
 *** xref:api/embeddings/zhipuai-embeddings.adoc[ZhiPu AI]
 ** xref:api/imageclient.adoc[]
 *** xref:api/image/azure-openai-image.adoc[Azure OpenAI]
@@ -65,6 +68,9 @@
 **** xref:api/audio/transcriptions/openai-transcriptions.adoc[OpenAI]
 *** xref:api/audio/speech.adoc[]
 **** xref:api/audio/speech/openai-speech.adoc[OpenAI]
+** xref:api/moderation[Moderation Model API]
+*** xref:api/moderation/openai-moderation.adoc[OpenAI]
+
 ** xref:api/vectordbs.adoc[]
 *** xref:api/vectordbs/azure.adoc[]
 *** xref:api/vectordbs/apache-cassandra.adoc[]
@@ -84,7 +90,6 @@
 *** xref:api/vectordbs/typesense.adoc[]
 *** xref:api/vectordbs/weaviate.adoc[]
 
-
 ** xref:api/functions.adoc[Function Calling]
 ** xref:api/multimodality.adoc[Multimodality]
 ** xref:api/prompt.adoc[]
@@ -92,8 +97,16 @@
 ** xref:api/etl-pipeline.adoc[]
 ** xref:api/testing.adoc[]
 ** xref:api/generic-model.adoc[]
-* xref:contribution-guidelines.adoc[Contribution Guidelines]
-* Appendices
-** xref:upgrade-notes.adoc[]
+
+* xref:observabilty/index.adoc[]
+
+* Service Connections
 ** xref:api/docker-compose.adoc[Docker Compose]
 ** xref:api/testcontainers.adoc[Testcontainers]
+** xref:api/cloud-bindings.adoc[Cloud Bindings]
+
+* xref:contribution-guidelines.adoc[Contribution Guidelines]
+
+* Appendices
+** xref:upgrade-notes.adoc[]
+

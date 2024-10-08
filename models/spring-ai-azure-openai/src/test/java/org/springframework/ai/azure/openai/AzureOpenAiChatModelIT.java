@@ -15,7 +15,6 @@
  */
 package org.springframework.ai.azure.openai;
 
-import com.azure.ai.openai.OpenAIClient;
 import com.azure.ai.openai.OpenAIClientBuilder;
 import com.azure.ai.openai.OpenAIServiceVersion;
 import com.azure.core.credential.AzureKeyCredential;
@@ -41,6 +40,8 @@ import org.springframework.boot.SpringBootConfiguration;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.context.annotation.Bean;
 import org.springframework.core.convert.support.DefaultConversionService;
+import org.springframework.core.io.ClassPathResource;
+import org.springframework.core.io.Resource;
 import org.springframework.util.MimeTypeUtils;
 
 import java.io.IOException;
@@ -78,6 +79,32 @@ class AzureOpenAiChatModelIT {
 		Prompt prompt = new Prompt(List.of(userMessage, systemMessage));
 		ChatResponse response = chatModel.call(prompt);
 		assertThat(response.getResult().getOutput().getContent()).contains("Blackbeard");
+	}
+
+	@Test
+	void testMessageHistory() {
+
+		Message systemMessage = new SystemPromptTemplate("""
+				You are a helpful AI assistant. Your name is {name}.
+				You are an AI assistant that helps people find information.
+				Your name is {name}
+				You should reply to the user's request with your name and also in the style of a {voice}.
+				""").createMessage(Map.of("name", "Bob", "voice", "pirate"));
+
+		UserMessage userMessage = new UserMessage(
+				"Tell me about 3 famous pirates from the Golden Age of Piracy and why they did.");
+
+		Prompt prompt = new Prompt(List.of(userMessage, systemMessage));
+
+		ChatResponse response = chatModel.call(prompt);
+		assertThat(response.getResult().getOutput().getContent()).containsAnyOf("Blackbeard");
+
+		var promptWithMessageHistory = new Prompt(List.of(new UserMessage("Dummy"), response.getResult().getOutput(),
+				new UserMessage("Repeat the last assistant message.")));
+		response = chatModel.call(promptWithMessageHistory);
+
+		System.out.println(response.getResult().getOutput().getContent());
+		assertThat(response.getResult().getOutput().getContent()).containsAnyOf("Blackbeard");
 	}
 
 	@Test
@@ -206,6 +233,24 @@ class AzureOpenAiChatModelIT {
 		assertThat(response).containsAnyOf("bowl", "basket");
 	}
 
+	@Test
+	void multiModalityImageResource() {
+
+		Resource resource = new ClassPathResource("multimodality/multimodal.test.png");
+
+		// @formatter:off
+		String response = ChatClient.create(chatModel).prompt()
+				.options(AzureOpenAiChatOptions.builder().withDeploymentName("gpt-4o").build())
+				.user(u -> u.text("Explain what do you see on this picture?").media(MimeTypeUtils.IMAGE_PNG, resource))
+				.call()
+				.content();
+		// @formatter:on
+
+		logger.info(response);
+		assertThat(response).contains("bananas", "apple");
+		assertThat(response).containsAnyOf("bowl", "basket");
+	}
+
 	record ActorsFilms(String actor, List<String> movies) {
 	}
 
@@ -216,17 +261,16 @@ class AzureOpenAiChatModelIT {
 	public static class TestConfiguration {
 
 		@Bean
-		public OpenAIClient openAIClient() {
+		public OpenAIClientBuilder openAIClientBuilder() {
 			return new OpenAIClientBuilder().credential(new AzureKeyCredential(System.getenv("AZURE_OPENAI_API_KEY")))
 				.endpoint(System.getenv("AZURE_OPENAI_ENDPOINT"))
 				.serviceVersion(OpenAIServiceVersion.V2024_02_15_PREVIEW)
-				.httpLogOptions(new HttpLogOptions().setLogLevel(BODY_AND_HEADERS))
-				.buildClient();
+				.httpLogOptions(new HttpLogOptions().setLogLevel(BODY_AND_HEADERS));
 		}
 
 		@Bean
-		public AzureOpenAiChatModel azureOpenAiChatModel(OpenAIClient openAIClient) {
-			return new AzureOpenAiChatModel(openAIClient,
+		public AzureOpenAiChatModel azureOpenAiChatModel(OpenAIClientBuilder openAIClientBuilder) {
+			return new AzureOpenAiChatModel(openAIClientBuilder,
 					AzureOpenAiChatOptions.builder().withDeploymentName("gpt-4o").withMaxTokens(1000).build());
 
 		}

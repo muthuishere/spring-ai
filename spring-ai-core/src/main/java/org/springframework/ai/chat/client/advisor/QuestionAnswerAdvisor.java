@@ -19,11 +19,15 @@ package org.springframework.ai.chat.client.advisor;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.function.Predicate;
 import java.util.stream.Collectors;
 
-import org.springframework.ai.chat.client.AdvisedRequest;
-import org.springframework.ai.chat.client.RequestResponseAdvisor;
-import org.springframework.ai.chat.metadata.ChatResponseMetadata;
+import org.springframework.ai.chat.client.advisor.api.AdvisedRequest;
+import org.springframework.ai.chat.client.advisor.api.AdvisedResponse;
+import org.springframework.ai.chat.client.advisor.api.CallAroundAdvisorChain;
+import org.springframework.ai.chat.client.advisor.api.CallAroundAdvisor;
+import org.springframework.ai.chat.client.advisor.api.StreamAroundAdvisor;
+import org.springframework.ai.chat.client.advisor.api.StreamAroundAdvisorChain;
 import org.springframework.ai.chat.model.ChatResponse;
 import org.springframework.ai.document.Document;
 import org.springframework.ai.model.Content;
@@ -35,6 +39,8 @@ import org.springframework.util.Assert;
 import org.springframework.util.StringUtils;
 
 import reactor.core.publisher.Flux;
+import reactor.core.publisher.Mono;
+import reactor.core.scheduler.Schedulers;
 
 /**
  * Context for the question is retrieved from a Vector Store and added to the prompt's
@@ -43,7 +49,7 @@ import reactor.core.publisher.Flux;
  * @author Christian Tzolov
  * @since 1.0.0
  */
-public class QuestionAnswerAdvisor implements RequestResponseAdvisor {
+public class QuestionAnswerAdvisor implements CallAroundAdvisor, StreamAroundAdvisor {
 
 	private static final String DEFAULT_USER_TEXT_ADVISE = """
 			Context information is below.
@@ -65,10 +71,24 @@ public class QuestionAnswerAdvisor implements RequestResponseAdvisor {
 
 	public static final String FILTER_EXPRESSION = "qa_filter_expression";
 
+	private final boolean protectFromBlocking;
+
+	/**
+	 * The QuestionAnswerAdvisor retrieves context information from a Vector Store and
+	 * combines it with the user's text.
+	 * @param vectorStore The vector store to use
+	 */
 	public QuestionAnswerAdvisor(VectorStore vectorStore) {
 		this(vectorStore, SearchRequest.defaults(), DEFAULT_USER_TEXT_ADVISE);
 	}
 
+	/**
+	 * The QuestionAnswerAdvisor retrieves context information from a Vector Store and
+	 * combines it with the user's text.
+	 * @param vectorStore The vector store to use
+	 * @param searchRequest The search request defined using the portable filter
+	 * expression syntax
+	 */
 	public QuestionAnswerAdvisor(VectorStore vectorStore, SearchRequest searchRequest) {
 		this(vectorStore, searchRequest, DEFAULT_USER_TEXT_ADVISE);
 	}
@@ -81,9 +101,26 @@ public class QuestionAnswerAdvisor implements RequestResponseAdvisor {
 	 * expression syntax
 	 * @param userTextAdvise the user text to append to the existing user prompt. The text
 	 * should contain a placeholder named "question_answer_context".
-	 *
 	 */
 	public QuestionAnswerAdvisor(VectorStore vectorStore, SearchRequest searchRequest, String userTextAdvise) {
+		this(vectorStore, searchRequest, userTextAdvise, true);
+	}
+
+	/**
+	 * The QuestionAnswerAdvisor retrieves context information from a Vector Store and
+	 * combines it with the user's text.
+	 * @param vectorStore The vector store to use
+	 * @param searchRequest The search request defined using the portable filter
+	 * expression syntax
+	 * @param userTextAdvise the user text to append to the existing user prompt. The text
+	 * should contain a placeholder named "question_answer_context".
+	 * @param protectFromBlocking if true the advisor will protect the execution from
+	 * blocking threads. If false the advisor will not protect the execution from blocking
+	 * threads. This is useful when the advisor is used in a non-blocking environment. It
+	 * is true by default.
+	 */
+	public QuestionAnswerAdvisor(VectorStore vectorStore, SearchRequest searchRequest, String userTextAdvise,
+			boolean protectFromBlocking) {
 
 		Assert.notNull(vectorStore, "The vectorStore must not be null!");
 		Assert.notNull(searchRequest, "The searchRequest must not be null!");
@@ -92,10 +129,55 @@ public class QuestionAnswerAdvisor implements RequestResponseAdvisor {
 		this.vectorStore = vectorStore;
 		this.searchRequest = searchRequest;
 		this.userTextAdvise = userTextAdvise;
+		this.protectFromBlocking = protectFromBlocking;
 	}
 
 	@Override
-	public AdvisedRequest adviseRequest(AdvisedRequest request, Map<String, Object> context) {
+	public String getName() {
+		return this.getClass().getSimpleName();
+	}
+
+	@Override
+	public int getOrder() {
+		return 0;
+	}
+
+	@Override
+	public AdvisedResponse aroundCall(AdvisedRequest advisedRequest, CallAroundAdvisorChain chain) {
+
+		AdvisedRequest advisedRequest2 = before(advisedRequest);
+
+		AdvisedResponse advisedResponse = chain.nextAroundCall(advisedRequest2);
+
+		return after(advisedResponse);
+	}
+
+	@Override
+	public Flux<AdvisedResponse> aroundStream(AdvisedRequest advisedRequest, StreamAroundAdvisorChain chain) {
+
+		// This can be executed by both blocking and non-blocking Threads
+		// E.g. a command line or Tomcat blocking Thread implementation
+		// or by a WebFlux dispatch in a non-blocking manner.
+		Flux<AdvisedResponse> advisedResponses = (this.protectFromBlocking) ?
+		// @formatter:off
+			Mono.just(advisedRequest)
+				.publishOn(Schedulers.boundedElastic())
+				.map(this::before)
+				.flatMapMany(request -> chain.nextAroundStream(request))
+			: chain.nextAroundStream(before(advisedRequest));
+		// @formatter:on
+
+		return advisedResponses.map(ar -> {
+			if (onFinishReason().test(ar)) {
+				ar = after(ar);
+			}
+			return ar;
+		});
+	}
+
+	private AdvisedRequest before(AdvisedRequest request) {
+
+		var context = new HashMap<>(request.adviseContext());
 
 		// 1. Advise the system text.
 		String advisedUserText = request.userText() + System.lineSeparator() + this.userTextAdvise;
@@ -121,25 +203,16 @@ public class QuestionAnswerAdvisor implements RequestResponseAdvisor {
 		AdvisedRequest advisedRequest = AdvisedRequest.from(request)
 			.withUserText(advisedUserText)
 			.withUserParams(advisedUserParams)
+			.withAdviseContext(context)
 			.build();
 
 		return advisedRequest;
 	}
 
-	@Override
-	public ChatResponse adviseResponse(ChatResponse response, Map<String, Object> context) {
-		ChatResponse.Builder chatResponseBuilder = ChatResponse.builder().from(response);
-		chatResponseBuilder.withMetadata(RETRIEVED_DOCUMENTS, context.get(RETRIEVED_DOCUMENTS));
-		return chatResponseBuilder.build();
-	}
-
-	@Override
-	public Flux<ChatResponse> adviseResponse(Flux<ChatResponse> fluxResponse, Map<String, Object> context) {
-		return fluxResponse.map(cr -> {
-			ChatResponse.Builder chatResponseBuilder = ChatResponse.builder().from(cr);
-			chatResponseBuilder.withMetadata(RETRIEVED_DOCUMENTS, context.get(RETRIEVED_DOCUMENTS));
-			return chatResponseBuilder.build();
-		});
+	private AdvisedResponse after(AdvisedResponse advisedResponse) {
+		ChatResponse.Builder chatResponseBuilder = ChatResponse.builder().from(advisedResponse.response());
+		chatResponseBuilder.withMetadata(RETRIEVED_DOCUMENTS, advisedResponse.adviseContext().get(RETRIEVED_DOCUMENTS));
+		return new AdvisedResponse(chatResponseBuilder.build(), advisedResponse.adviseContext());
 	}
 
 	protected Filter.Expression doGetFilterExpression(Map<String, Object> context) {
@@ -149,6 +222,59 @@ public class QuestionAnswerAdvisor implements RequestResponseAdvisor {
 			return this.searchRequest.getFilterExpression();
 		}
 		return new FilterExpressionTextParser().parse(context.get(FILTER_EXPRESSION).toString());
+
+	}
+
+	private Predicate<AdvisedResponse> onFinishReason() {
+		return (advisedResponse) -> advisedResponse.response()
+			.getResults()
+			.stream()
+			.filter(result -> result != null && result.getMetadata() != null
+					&& StringUtils.hasText(result.getMetadata().getFinishReason()))
+			.findFirst()
+			.isPresent();
+	}
+
+	public static Builder builder(VectorStore vectorStore) {
+		return new Builder(vectorStore);
+	}
+
+	public static class Builder {
+
+		private final VectorStore vectorStore;
+
+		private SearchRequest searchRequest = SearchRequest.defaults();
+
+		private String userTextAdvise = DEFAULT_USER_TEXT_ADVISE;
+
+		private boolean protectFromBlocking = true;
+
+		private Builder(VectorStore vectorStore) {
+			Assert.notNull(vectorStore, "The vectorStore must not be null!");
+			this.vectorStore = vectorStore;
+		}
+
+		public Builder withSearchRequest(SearchRequest searchRequest) {
+			Assert.notNull(searchRequest, "The searchRequest must not be null!");
+			this.searchRequest = searchRequest;
+			return this;
+		}
+
+		public Builder withUserTextAdvise(String userTextAdvise) {
+			Assert.hasText(userTextAdvise, "The userTextAdvise must not be empty!");
+			this.userTextAdvise = userTextAdvise;
+			return this;
+		}
+
+		public Builder withProtectFromBlocking(boolean protectFromBlocking) {
+			this.protectFromBlocking = protectFromBlocking;
+			return this;
+		}
+
+		public QuestionAnswerAdvisor build() {
+			return new QuestionAnswerAdvisor(this.vectorStore, this.searchRequest, this.userTextAdvise,
+					this.protectFromBlocking);
+		}
 
 	}
 
